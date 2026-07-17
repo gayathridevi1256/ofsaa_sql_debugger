@@ -1,0 +1,230 @@
+🧠 AML Threshold Optimization System (AI + Python Architecture)
+🎯 Objective
+
+Given:
+
+A SQL scenario that produces candidate alerts (no thresholds applied)
+Multiple risk variables like:
+amount
+transaction_count
+counter_party_count
+high_risk_location_count
+
+We want:
+
+Automatically learn threshold combinations that generate ~N% alerts (e.g., 20%)
+AND maximize alert quality (risk separation), not just volume control.
+
+🏗️ SYSTEM ARCHITECTURE
+🔷 Module 1: Candidate Data Extractor
+Purpose
+
+Run AML SQL without thresholds and capture full population.
+
+Input
+Base SQL query (no filters)
+Output table (critical)
+candidate_alerts
+-----------------------------
+customer_id/account_id
+amount
+txn_count
+counterparty_count
+high_risk_loc_count
+label(optional if available: SAR/STR)
+Implementation (Python)
+Use sqlalchemy or cx_Oracle
+Execute query
+Load into pandas dataframe
+🔷 Module 2: Feature Normalization Engine
+Why needed
+
+Different metrics have different scales.
+
+Transform each column into:
+percentile rank (preferred)
+OR
+z-score
+Recommended approach (percentile rank)
+df["amount_pct"] = df["amount"].rank(pct=True) * 100
+df["txn_pct"] = df["txn_count"].rank(pct=True) * 100
+df["risk_pct"] = df["high_risk_loc_count"].rank(pct=True) * 100
+Why percentile?
+Stable across populations
+Easy explainability for AML auditors
+No distribution assumptions
+🔷 Module 3: Risk Scoring Engine (Core Idea)
+
+Instead of hard thresholds first, compute:
+
+Composite Risk Score
+df["risk_score"] =
+    0.5 * df["amount_pct"] +
+    0.3 * df["txn_pct"] +
+    0.2 * df["risk_pct"]
+Output
+
+Each row gets a single risk score (0–100)
+
+🔷 Module 4: Threshold Search Engine (AI/Optimization Layer)
+
+Now we convert problem into:
+
+Find cutoff on risk_score that yields ~20% alerts
+
+Step A: Define target
+target_alert_ratio = 0.20
+target_alert_count = len(df) * 0.20
+Step B: Optimization problem
+
+We search:
+
+threshold T such that:
+count(risk_score >= T) ≈ target_alert_count
+Step C: Simple solution (baseline)
+threshold = df["risk_score"].quantile(0.80)
+Step D: Advanced AI optimization (recommended)
+
+Use Optuna (Bayesian Optimization)
+
+Objective function:
+def objective(trial):
+    w1 = trial.suggest_float("w1", 0.1, 0.7)
+    w2 = trial.suggest_float("w2", 0.1, 0.7)
+    w3 = trial.suggest_float("w3", 0.1, 0.7)
+
+    score = w1*amount_pct + w2*txn_pct + w3*risk_pct
+
+    threshold = np.percentile(score, 80)
+    alerts = (score >= threshold).sum()
+
+    return abs(alerts - target_alert_count)
+Result:
+Learns best weighting of variables
+Automatically adjusts threshold logic
+🔷 Module 5: Multi-Threshold Extraction (Production Version)
+
+Instead of single score, extract real thresholds:
+
+After finding optimal risk scoring:
+
+Step:
+
+Split back into interpretable thresholds:
+
+alerted = df[df["risk_score"] >= threshold]
+
+Now compute:
+
+final_amount_threshold = alerted["amount"].min()
+final_txn_threshold = alerted["txn_count"].min()
+final_risk_threshold = alerted["high_risk_loc_count"].min()
+Output rule:
+amount >= X
+AND txn_count >= Y
+AND risk_loc_count >= Z
+
+This converts AI model → explainable AML rule.
+
+🔷 Module 6: What-If Simulator (VERY IMPORTANT)
+
+This is where your system becomes powerful.
+
+Function:
+
+For each threshold combination:
+
+def simulate(amount_th, txn_th, risk_th):
+    filtered = df[
+        (df.amount >= amount_th) &
+        (df.txn_count >= txn_th) &
+        (df.risk_pct >= risk_th)
+    ]
+    return len(filtered)
+Output:
+Scenario	Alerts
+base	98
+tuned_1	45
+tuned_2	21
+🔷 Module 7: AI Explanation Layer (LLM Integration)
+
+Now feed results into LLM:
+
+Input to LLM:
+We reduced alerts from 98 to 20.
+
+Feature impact:
+- amount threshold contributed 60% reduction
+- txn count contributed 25%
+- risk geography contributed 15%
+
+Explain why alerts are suppressed and recommend tuning direction.
+Output:
+Human-readable justification
+Audit-friendly explanation
+Model validation report
+🚀 ADVANCED (DIFFERENTIATING IDEA)
+🔥 Graph-Based AML Enhancement (Rare in industry)
+
+Instead of treating rows independently:
+
+Build graph:
+
+Nodes:
+
+customers
+counterparties
+
+Edges:
+
+transactions
+shared devices
+shared geography
+Compute:
+import networkx as nx
+
+G = nx.Graph()
+Features:
+PageRank
+Connected components risk
+Community detection
+Final score:
+final_score =
+    0.7 * transaction_risk +
+    0.3 * graph_risk
+
+Then apply threshold on network risk, not just numeric filters.
+
+👉 This detects:
+
+mule clusters
+fraud rings
+structuring networks
+📦 FINAL SYSTEM OUTPUT
+
+Your system should output:
+
+1. Optimal Rule Set
+amount >= 72,500
+AND txn_count >= 12
+AND risk_location >= 3
+2. Expected Performance
+Alerts: 20 / 98 (20.4%)
+Coverage: X% known SAR patterns (if labels exist)
+3. Explanation Report
+Why these thresholds selected
+Which feature drives suppression
+What happens if thresholds are relaxed
+4. What-if Dashboard (optional Streamlit)
+slider for thresholds
+live alert count update
+risk distribution plot
+🧠 KEY IDEA (IMPORTANT)
+
+You are NOT solving:
+
+“What threshold gives 20% alerts?”
+
+You are solving:
+
+“What combination of risk signals best separates suspicious vs normal behavior under a constrained alert budget?”

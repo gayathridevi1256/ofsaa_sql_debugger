@@ -1,0 +1,10 @@
+{
+    "clndr_vw": [],
+    "Wire_Trxn_Vw": [
+        "clndr_vw"
+    ],
+    "Mi_Trxn_Vw": [
+        "clndr_vw"
+    ],
+    "Cust_Accounts": []
+}

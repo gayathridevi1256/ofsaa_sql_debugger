@@ -1,0 +1,89 @@
+-- CTE NAME: wire_vw
+
+SELECT
+  w.BANK_TO_BANK_TRNFR_FL,
+  w.BENEF_ACCT_ID,
+  w.BENEF_ACTVY_RISK_NB,
+  w.CXL_PAIR_TRXN_INTRL_ID,
+  w.DATA_DUMP_DT,
+  w.FO_TRXN_SEQ_ID,
+  w.INTRL_BENEF_ACCT_FL,
+  w.INTRL_ORIG_ACCT_FL,
+  w.INTRL_SCND_BENEF_ACCT_FL,
+  w.INTRL_SCND_ORIG_ACCT_FL,
+  w.MANTAS_TRXN_PRDCT_CD,
+  w.MANTAS_TRXN_PURP_CD,
+  w.ORIG_ACCT_ID,
+  w.ORIG_ACTVY_RISK_NB,
+  w.PASS_THRU_FL,
+  w.RCV_TRXN_ACTVY_AM,
+  w.SCND_BENEF_ACCT_ID,
+  w.SCND_BENEF_ACTVY_RISK_NB,
+  w.SCND_ORIG_ACCT_ID,
+  w.SCND_ORIG_ACTVY_RISK_NB,
+  w.SEND_TRXN_ACTVY_AM,
+  w.SRC_SYS_CD,
+  w.TRSTD_TRXN_FL,
+  w.TRXN_BASE_AM,
+  DECODE('B', 'F', w.TRXN_FUNC_AM, w.TRXN_BASE_AM) AS Trxn_Am,
+  w.TRXN_EXCTN_DT,
+  w.UNRLTD_PARTY_FL,
+  CASE
+    WHEN DECODE('B', 'F', w.TRXN_FUNC_AM, w.TRXN_BASE_AM) - TRUNC(DECODE('B', 'F', w.TRXN_FUNC_AM, w.TRXN_BASE_AM), -4) = 0
+    THEN DECODE('B', 'F', w.TRXN_FUNC_AM, w.TRXN_BASE_AM)
+    WHEN w.RCV_TRXN_ACTVY_AM - TRUNC(w.RCV_TRXN_ACTVY_AM, -4) = 0
+    THEN DECODE('B', 'F', w.TRXN_FUNC_AM, w.TRXN_BASE_AM)
+    WHEN w.SEND_TRXN_ACTVY_AM - TRUNC(w.SEND_TRXN_ACTVY_AM, -4) = 0
+    THEN DECODE('B', 'F', w.TRXN_FUNC_AM, w.TRXN_BASE_AM)
+    ELSE 0
+  END AS Lrf_Am,
+  CASE
+    WHEN w.PASS_THRU_FL = 'Y'
+    THEN DECODE('B', 'F', w.TRXN_FUNC_AM, w.TRXN_BASE_AM)
+    ELSE 0
+  END AS Pass_Thru_Am,
+  CASE
+    WHEN w.TRSTD_TRXN_FL = 'Y'
+    THEN DECODE('B', 'F', w.TRXN_FUNC_AM, w.TRXN_BASE_AM)
+    ELSE 0
+  END AS Trusted_Trans_Amt,
+  w.FUNC_CRNCY_CD
+FROM WIRE_TRXN w
+WHERE
+  w.MANTAS_TRXN_PURP_CD = 'GENERAL'
+  AND (
+    'Y' = 'Y' OR w.SRC_SYS_CD IN ('Inactive')
+  )
+  AND w.MANTAS_TRXN_PRDCT_CD IN ('EFT-ACH', 'EFT-TREASURY', 'EFT-FEDWIRE', 'EFT-SWIFT', 'EFT-OTHER', 'EST')
+  AND /* 20039324, 34237111 */ w.TRXN_EXCTN_DT > (
+    SELECT
+      Min_Dt
+    FROM clndr_vw
+  )
+  AND w.TRXN_EXCTN_DT <= (
+    SELECT
+      Max_Dt
+    FROM clndr_vw
+  )
+  AND w.DATA_DUMP_DT > (
+    SELECT
+      Min_Dt
+    FROM clndr_vw
+  )
+  AND w.DATA_DUMP_DT <= (
+    SELECT
+      Max_Dt
+    FROM clndr_vw
+  )
+  AND (
+    'Y' = 'Y' OR NOT (
+      w.BANK_TO_BANK_TRNFR_FL = 'Y' AND w.PASS_THRU_FL = 'N'
+    )
+  )
+  AND /* 21034264 */ (
+    'Y' = 'Y' OR COALESCE(w.TRSTD_TRXN_FL, 'N') = 'N'
+  )
+  AND (
+    'Y' = 'Y' OR COALESCE(w.unrltd_party_fl, 'Y') <> 'N'
+  )
+  AND w.CXL_PAIR_TRXN_INTRL_ID IS NULL

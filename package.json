@@ -1,0 +1,8 @@
+{
+  "scripts": {
+    "dev": "concurrently --names \"backend,frontend\" --prefix-colors \"cyan,magenta\" \"cd backend && uv run uvicorn main:app --host 127.0.0.1 --port 8000 --reload\" \"cd frontend && npm run dev\""
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.3"
+  }
+}
