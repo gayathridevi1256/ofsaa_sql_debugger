@@ -115,7 +115,7 @@ MAX_SQL_FILE_BYTES = int(os.getenv("MAX_SQL_FILE_BYTES", str(10 * 1024 * 1024)))
 # Defaults to a "pipeline" folder next to this config file
 PIPELINE_DIR    = Path(os.getenv(
     "PIPELINE_DIR",
-    str(Path(__file__).parent.parent / "pipeline")
+    str(Path(__file__).parent / "pipeline")
 ))
 
 # How long (seconds) to wait before killing a hung pipeline step

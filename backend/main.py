@@ -82,7 +82,7 @@ from jobs import (
     get_audit_log, audit, update_job_status,
     get_cached_job
 )
-from pipeline import run_pipeline
+from orchestrator import run_pipeline
 
 # ----------------------------------------------------------------------
 # STARTUP
