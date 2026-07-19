@@ -99,111 +99,112 @@ class CTEParser:
         """
         Extract inner SELECT query from:
 
-        SELECT ot.*
-        FROM (
-            WITH ...
-            SELECT ...
-        ) ot
+        Pattern 1 (non-function scenarios):
+            SELECT ot.*
+            FROM (
+                WITH ...
+                SELECT ...
+            ) ot
 
-        Returns ONLY:
+        Pattern 2 (function scenarios):
+            WITH CTE_NAME AS (...)
+            SELECT ...  <-- this part
 
-        SELECT ...
+        Returns ONLY the final SELECT after all CTEs.
         """
 
         try:
 
             sql = self.original_sql
 
+            # Strip -- comments (function SQL files have header comments)
+            sql_no_comments = "\n".join(
+                line for line in sql.splitlines()
+                if not line.strip().startswith("--")
+            ).strip()
+
             # ----------------------------------------------------------
-            # FIND START OF INNER BLOCK
+            # PATTERN 1: SELECT ot.* FROM (WITH ... SELECT ...) ot
             # ----------------------------------------------------------
 
             from_pos = re.search(
                 r'FROM\s*\(',
-                sql,
+                sql_no_comments,
                 re.IGNORECASE
             )
 
-            if not from_pos:
+            if from_pos:
 
-                print("\nFROM ( not found")
+                content = sql_no_comments[from_pos.end():]
 
-                return ""
+                end_match = re.search(
+                    r'\)\s*ot\b',
+                    content,
+                    re.IGNORECASE
+                )
+
+                if end_match:
+
+                    content = content[:end_match.start()]
+
+                    with_pos = re.search(
+                        r'\bWITH\b',
+                        content,
+                        re.IGNORECASE
+                    )
+
+                    if with_pos:
+
+                        content = content[with_pos.end():]
+
+                    bracket_count = 0
+                    i = 0
+
+                    while i < len(content):
+
+                        char = content[i]
+
+                        if char == "(":
+                            bracket_count += 1
+
+                        elif char == ")":
+                            bracket_count -= 1
+
+                        if (
+                            bracket_count == 0
+                            and content[i:i+6].upper() == "SELECT"
+                        ):
+
+                            final_query = content[i:]
+
+                            return final_query.strip()
+
+                        i += 1
 
             # ----------------------------------------------------------
-            # CONTENT INSIDE FROM (
+            # PATTERN 2: WITH CTE AS (...) final_select
+            # Fallback for function scenarios where SQL is:
+            #   WITH All_Trxn_B AS ( ... ) SELECT ... FROM ...
             # ----------------------------------------------------------
 
-            content = sql[from_pos.end():]
+            stripped = sql_no_comments
+            with_match = re.match(r'\bWITH\s+', stripped, re.IGNORECASE)
 
-            # ----------------------------------------------------------
-            # REMOVE LAST ) ot
-            # ----------------------------------------------------------
+            if with_match:
 
-            end_match = re.search(
-                r'\)\s*ot\b',
-                content,
-                re.IGNORECASE
-            )
+                after_with = stripped[with_match.end():]
 
-            if not end_match:
+                cte_close = self._find_last_cte_closing_paren(after_with)
 
-                print("\nOT wrapper not found")
+                if cte_close is not None and cte_close + 1 < len(after_with):
 
-                return ""
+                    remaining = after_with[cte_close + 1:].strip()
 
-            content = content[:end_match.start()]
+                    select_match = re.match(r'\bSELECT\b', remaining, re.IGNORECASE)
 
-            # ----------------------------------------------------------
-            # REMOVE WITH CLAUSE MANUALLY
-            # ----------------------------------------------------------
+                    if select_match:
 
-            with_pos = re.search(
-                r'\bWITH\b',
-                content,
-                re.IGNORECASE
-            )
-
-            if not with_pos:
-
-                return content.strip()
-
-            content = content[with_pos.end():]
-
-            # ----------------------------------------------------------
-            # FIND FINAL SELECT
-            # ----------------------------------------------------------
-
-            bracket_count = 0
-
-            i = 0
-
-            while i < len(content):
-
-                char = content[i]
-
-                if char == "(":
-                    bracket_count += 1
-
-                elif char == ")":
-                    bracket_count -= 1
-
-                # ------------------------------------------------------
-                # FINAL SELECT AFTER ALL CTEs
-                # ------------------------------------------------------
-
-                if (
-                    bracket_count == 0
-                    and content[i:i+6].upper() == "SELECT"
-                ):
-
-                    final_query = content[i:]
-
-                    return final_query.strip()
-
-                i += 1
-
-            print("\nFinal SELECT not found")
+                        return remaining.strip()
 
             return ""
 
@@ -213,6 +214,31 @@ class CTEParser:
             print(str(e))
 
             return ""
+
+    def _find_last_cte_closing_paren(self, sql: str) -> int:
+        """
+        Find the index of the closing ')' that ends the last CTE definition.
+        Handles multiple CTEs: WITH a AS (...), b AS (...) <-- this paren
+        Returns the position relative to `sql`, or None if not found.
+        """
+        depth = 0
+        i = 0
+        last_close_at_depth_zero = None
+
+        while i < len(sql):
+            ch = sql[i]
+            if ch == '(':
+                depth += 1
+            elif ch == ')':
+                depth -= 1
+                if depth == 0:
+                    last_close_at_depth_zero = i
+                    after = sql[i + 1:].lstrip()
+                    if re.match(r'\bSELECT\b', after, re.IGNORECASE):
+                        return last_close_at_depth_zero
+            i += 1
+
+        return last_close_at_depth_zero
     # ------------------------------------------------------------------
     # EXTRACT DEPENDENCIES
     # ------------------------------------------------------------------
@@ -475,7 +501,7 @@ def parse_ctes(output_dir=None, run_logger=None):
     dataset_files = [
         os.path.join(extracted_dir, f)
         for f in os.listdir(extracted_dir)
-        if ("dataset_query" in f.lower() or "dataset_" in f.lower()) and f.lower().endswith(".sql")
+        if ("dataset_query" in f.lower() or "dataset_" in f.lower() or "resolved_function_dataset_" in f.lower()) and f.lower().endswith(".sql")
     ] if os.path.isdir(extracted_dir) else []
 
     if not dataset_files:

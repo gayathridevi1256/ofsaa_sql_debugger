@@ -1,0 +1,529 @@
+create or replace FUNCTION F_STRUCTURING_CU_B
+(pLrf_Digits                      in integer default    2,
+ pCurr_Type                       in varchar2 default 'B',
+ pAll_Trans_Src_Fl                in varchar2 default 'Y',
+ pIncl_Trans_Src_Lst                in Lst,
+ pAll_Jurisdictions_Fl            in varchar2 default 'Y',
+ pIncl_Jurisdictions_Lst          in Lst,
+ pMantas_Bus_Acct_Type_Lst        in Lst,
+ pLook_Back_Period                in integer default            14,
+ pIncl_MI_Prdct_Type_Lst          in Lst,
+ pIncl_Csh_Prdct_Type_Lst         in Lst,
+ pInclude_Trusted_Trans_FL        in varchar2 default   'Y',
+ pInclude_B2B_Trnfr_Fl            in varchar2 default 'Y',
+ pPrmry_Cust_Fl                   in varchar2 default 'Y',
+ pLE_R1                           in number default 1000,
+ pLE_R2                           in number default 1000,
+ pUE_R1                           in number default 1000,
+ pUE_R2                           in number default 1000,
+ pMin_Attempts                    in integer default    2,
+ pIncld_Acct_Hldr_Typ_Cd          in Lst
+) RETURN number DETERMINISTIC is
+PRAGMA AUTONOMOUS_TRANSACTION;
+CURSOR CUR(
+       p_Lrf_Digits                      in integer default     2,
+       p_Curr_Type                       in varchar2 default 'B',
+       p_All_Trans_Src_Fl                in varchar2 default 'Y',
+       p_Incl_Trans_Src_Lst                  in Lst,
+       p_All_Jurisdictions_Fl            in varchar2 default 'Y',
+       p_Incl_Jurisdictions_Lst          in Lst,
+       p_Mantas_Bus_Acct_Type_Lst        in Lst,
+       p_Look_Back_Period                in integer default             14,
+       p_Incl_MI_Prdct_Type_Lst          in Lst,
+       p_Incl_Csh_Prdct_Type_Lst         in Lst,
+       p_Include_Trusted_Trans_FL        in varchar2 default    'Y',
+       p_Include_B2B_Trnfr_Fl            in varchar2 default 'Y',
+       p_Prmry_Cust_Fl                   in varchar2 default 'Y',
+       p_LE_R1                           in number default 1000,
+       p_LE_R2                           in number default 1000,
+       p_UE_R1                           in number default 1000,
+       p_UE_R2                           in number default 1000,
+       p_Min_Attempts                    in integer default     2,
+       p_Incld_Acct_Hldr_Typ_Cd          in Lst
+       ) IS
+with All_Trxn_B as
+(select
+   t.cust_intrl_id
+  ,t.bus_day_age
+  ,min(t.Clndr_Day_Age) Clndr_Day_Age
+  ,sum(t.trxn_am) One_Day_Amt
+  ,max(t.trans_dt) Trans_Dt
+  ,max(t.func_crncy_cd) Func_Crncy_Cd
+from
+ (
+    /*********MI*******/
+   select mi.cust_intrl_id
+        , mi.bus_day_age
+        , mi.Clndr_Day_Age
+        , mi.trxn_am
+        , mi.trans_dt
+        , mi.func_crncy_cd
+    from
+       --ML_StructAvdRprtTshld_CU_MI_BM1
+       --114016222 mi
+       (--OFSAABD-17813
+SELECT a.PRMRY_CUST_INTRL_ID as CUST_INTRL_ID,
+            (case when DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM) - trunc(DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM),-p_Lrf_Digits) = 0 then DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM)
+                  when t.ISSUE_TRXN_ACTVY_AM - trunc(t.ISSUE_TRXN_ACTVY_AM,-p_Lrf_Digits) = 0 then DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM)
+                  when t.CLR_TRXN_ACTVY_AM - trunc(t.CLR_TRXN_ACTVY_AM,-p_Lrf_Digits) = 0 then DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM)
+                  when t.DEP_TRXN_ACTVY_AM - trunc(t.DEP_TRXN_ACTVY_AM,-p_Lrf_Digits) = 0 then DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM)
+                  else 0 end) Lrf_Amt,
+            (case when t.BENEF_NTITY_RISK_NB > 0 or t.BENEF_ACTVY_RISK_NB > 0 then DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM) else 0 end) as Hr_Amt,
+            (case when t.PASS_THRU_FL = 'Y' then DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM) else 0 end) Pass_Thru_Amt,
+            --25048632
+            (SELECT k.BUS_DAY_AGE FROM fccmatomic.KDD_CAL k WHERE k.CLNDR_NM = 'SYSCAL' AND k.CLNDR_DT = t.MANTAS_POST_DT) as BUS_DAY_AGE,
+            (SELECT k.CLNDR_DAY_AGE FROM fccmatomic.KDD_CAL k WHERE k.CLNDR_NM = 'SYSCAL' AND k.CLNDR_DT = t.MANTAS_POST_DT) as CLNDR_DAY_AGE,
+            t.FO_TRXN_SEQ_ID,
+            DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM) as Trxn_Am,
+            DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM)   as Dep_Trans_Amt,
+            1                as Dep_Trans_Ct,
+            0                as WD_Trans_Amt,
+            0                as WD_Trans_Ct,
+            1                as Trans_Ty,
+            1                as Grp_Cd,
+            t.MANTAS_POST_DT as Trans_Dt,
+            t.BENEF_ACCT_ID as ACCT_INTRL_ID,
+            case when t.TRSTD_TRXN_FL = 'Y' then DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM) else 0 end as Trusted_Trxn_Amt,
+            t.FUNC_CRNCY_CD
+       FROM
+            fccmatomic.MI_TRXN t,
+            fccmatomic.ACCT a,
+            fccmatomic.CUST c
+    WHERE
+          t.BENEF_ACCT_ID = a.ACCT_INTRL_ID
+      AND a.prmry_cust_intrl_id is not null
+      AND (p_All_Trans_Src_Fl = 'Y' or t.SRC_SYS_CD in (SELECT column_value FROM table (cast (p_Incl_Trans_Src_Lst as Lst))))
+      AND t.INTRL_BENEF_ACCT_FL = 'Y'
+      -- ---------------------------------------------------------------------------------------------------
+      --Bug#21935427
+      /*      AND (a.LAST_ACTVY_DT is null or
+          (a.LAST_ACTVY_DT > (SELECT add_days(min(b.CLNDR_DT),-Frequency_Period) FROM fccmatomic.KDD_CAL b WHERE b.CLNDR_NM = 'SYSCAL' AND b.CLNDR_DAY_AGE=0)
+           AND a.LAST_ACTVY_DT <= (SELECT max(b.CLNDR_DT) FROM fccmatomic.KDD_CAL b WHERE b.CLNDR_NM = 'SYSCAL' AND b.CLNDR_DAY_AGE=0 ) )
+          )*/
+      AND c.CUST_INTRL_ID = a.PRMRY_CUST_INTRL_ID
+      AND a.MANTAS_ACCT_HOLDR_TYPE_CD in (SELECT column_value FROM table (cast (p_Incld_Acct_Hldr_Typ_Cd as Lst)))
+      AND c.CUST_EFCTV_RISK_NB <> -2
+      AND (p_All_Jurisdictions_Fl = 'Y' or c.JRSDCN_CD in (SELECT column_value FROM table (cast (p_Incl_Jurisdictions_Lst as Lst))))
+      AND a.MANTAS_ACCT_BUS_TYPE_CD in (SELECT column_value FROM table (cast (p_Mantas_Bus_Acct_Type_Lst as Lst)))
+        -- ---------------------------------------------------------------------------------------------------
+      --25048632
+      AND t.MANTAS_POST_DT in (SELECT k.CLNDR_DT FROM fccmatomic.KDD_CAL k WHERE k.CLNDR_DAY_AGE between 0 and p_Look_Back_Period-1 AND k.CLNDR_NM = 'SYSCAL')
+      AND t.DATA_DUMP_DT in (SELECT k.CLNDR_DT FROM fccmatomic.KDD_CAL k WHERE k.CLNDR_DAY_AGE between 0 and p_Look_Back_Period-1 AND k.CLNDR_NM = 'SYSCAL')
+            -- PR32809
+            -- Cover only GENERAL transactions
+      AND t.MANTAS_TRXN_PURP_CD = 'GENERAL'
+      AND t.MANTAS_TRXN_PRDCT_CD in (SELECT column_value FROM table (cast (p_Incl_MI_Prdct_Type_Lst as Lst)))
+      AND (p_Include_Trusted_Trans_FL = 'Y' or COALESCE(t.TRSTD_TRXN_FL,'N') ='N')
+      -- allow user to include (Y) or exclude (N)  Bank-to-Bank transactions between related parties
+      AND (p_Include_B2B_Trnfr_Fl = 'Y' or NOT(t.BANK_TO_BANK_TRNFR_FL = 'Y' and t.PASS_THRU_FL = 'N'))
+      -- Divide By Zero error handling
+      AND DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM) IS NOT NULL AND DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM) <> 0
+      AND p_Prmry_Cust_Fl = 'Y'
+            --30232271
+            --Exclude Canceled and Canceling Transactions
+            AND t.CXL_PAIR_TRXN_INTRL_ID IS NULL
+--25363161
+UNION ALL
+SELECT a.PRMRY_CUST_INTRL_ID as CUST_INTRL_ID,
+            (case when DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM) - trunc(DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM),-p_Lrf_Digits) = 0 then DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM)
+                  when t.ISSUE_TRXN_ACTVY_AM - trunc(t.ISSUE_TRXN_ACTVY_AM,-p_Lrf_Digits) = 0 then DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM)
+                  when t.CLR_TRXN_ACTVY_AM - trunc(t.CLR_TRXN_ACTVY_AM,-p_Lrf_Digits) = 0 then DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM)
+                  when t.DEP_TRXN_ACTVY_AM - trunc(t.DEP_TRXN_ACTVY_AM,-p_Lrf_Digits) = 0 then DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM)
+                  else 0 end) Lrf_Amt,
+            (case when t.SCND_BENEF_NTITY_RISK_NB > 0 or t.SCND_BENEF_ACTVY_RISK_NB > 0 then DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM) else 0 end) as Hr_Amt,
+            (case when t.PASS_THRU_FL = 'Y' then DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM) else 0 end) Pass_Thru_Amt,
+            --25048632
+            (SELECT k.BUS_DAY_AGE FROM fccmatomic.KDD_CAL k WHERE k.CLNDR_NM = 'SYSCAL' AND k.CLNDR_DT = t.MANTAS_POST_DT) as BUS_DAY_AGE,
+            (SELECT k.CLNDR_DAY_AGE FROM fccmatomic.KDD_CAL k WHERE k.CLNDR_NM = 'SYSCAL' AND k.CLNDR_DT = t.MANTAS_POST_DT) as CLNDR_DAY_AGE,
+            t.FO_TRXN_SEQ_ID,
+            DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM) as Trxn_Am,
+            DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM)   as Dep_Trans_Amt,
+            1                as Dep_Trans_Ct,
+            0                as WD_Trans_Amt,
+            0                as WD_Trans_Ct,
+            1                as Trans_Ty,
+            1                as Grp_Cd,
+            t.MANTAS_POST_DT as Trans_Dt,
+            t.SCND_BENEF_ACCT_ID as ACCT_INTRL_ID,
+            case when t.TRSTD_TRXN_FL = 'Y' then DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM) else 0 end as Trusted_Trxn_Amt,
+            t.FUNC_CRNCY_CD
+       FROM
+            fccmatomic.MI_TRXN t,
+            fccmatomic.ACCT a,
+            fccmatomic.CUST c
+    WHERE
+          t.SCND_BENEF_ACCT_ID = a.ACCT_INTRL_ID
+      AND a.PRMRY_CUST_INTRL_ID is not null
+      AND (p_All_Trans_Src_Fl = 'Y' or t.SRC_SYS_CD in (SELECT column_value FROM table (cast (p_Incl_Trans_Src_Lst as Lst))))
+      AND t.INTRL_SCND_BENEF_ACCT_FL = 'Y'
+      AND (t.INTRL_BENEF_ACCT_FL <> 'Y'
+          OR
+          (COALESCE((select a1.PRMRY_CUST_INTRL_ID from fccmatomic.ACCT a1 where a1.ACCT_INTRL_ID = t.BENEF_ACCT_ID),'-') <> a.PRMRY_CUST_INTRL_ID))
+    -- ---------------------------------------------------------------------------------------------------
+--Bug#21935427
+/*      AND (a.LAST_ACTVY_DT is null or
+          (a.LAST_ACTVY_DT > (SELECT add_days(min(b.CLNDR_DT),-Frequency_Period) FROM fccmatomic.KDD_CAL b WHERE b.CLNDR_NM = 'SYSCAL' AND b.CLNDR_DAY_AGE=0)
+           AND a.LAST_ACTVY_DT <= (SELECT max(b.CLNDR_DT) FROM fccmatomic.KDD_CAL b WHERE b.CLNDR_NM = 'SYSCAL' AND b.CLNDR_DAY_AGE=0 ) )
+          )*/
+      AND c.CUST_INTRL_ID = a.PRMRY_CUST_INTRL_ID
+      AND a.MANTAS_ACCT_HOLDR_TYPE_CD in (SELECT column_value FROM table (cast (p_Incld_Acct_Hldr_Typ_Cd as Lst)))
+      AND c.CUST_EFCTV_RISK_NB <> -2
+      AND (p_All_Jurisdictions_Fl = 'Y' or c.JRSDCN_CD in (SELECT column_value FROM table (cast (p_Incl_Jurisdictions_Lst as Lst))))
+      AND a.MANTAS_ACCT_BUS_TYPE_CD in (SELECT column_value FROM table (cast (p_Mantas_Bus_Acct_Type_Lst as Lst)))
+    -- ---------------------------------------------------------------------------------------------------
+      --25048632
+      AND t.MANTAS_POST_DT in (SELECT k.CLNDR_DT FROM fccmatomic.KDD_CAL k WHERE k.CLNDR_DAY_AGE between 0 and p_Look_Back_Period-1 AND k.CLNDR_NM = 'SYSCAL')
+      AND t.DATA_DUMP_DT in (SELECT k.CLNDR_DT FROM fccmatomic.KDD_CAL k WHERE k.CLNDR_DAY_AGE between 0 and p_Look_Back_Period-1 AND k.CLNDR_NM = 'SYSCAL')
+            -- PR32809
+            -- Cover only GENERAL transactions
+      AND t.MANTAS_TRXN_PURP_CD = 'GENERAL'
+      AND t.MANTAS_TRXN_PRDCT_CD in (SELECT column_value FROM table (cast (p_Incl_MI_Prdct_Type_Lst as Lst)))
+      AND (p_Include_Trusted_Trans_FL = 'Y' or COALESCE(t.TRSTD_TRXN_FL,'N') ='N')
+      -- allow user to include (Y) or exclude (N)  Bank-to-Bank transactions between related parties
+      AND (p_Include_B2B_Trnfr_Fl = 'Y' or NOT(t.BANK_TO_BANK_TRNFR_FL = 'Y' and t.PASS_THRU_FL = 'N'))
+      -- Divide By Zero error handling
+      AND DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM) IS NOT NULL AND DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM) <> 0
+      AND p_Prmry_Cust_Fl = 'Y'
+          --30232271
+          --Exclude Canceled and Canceling Transactions
+          AND t.CXL_PAIR_TRXN_INTRL_ID IS NULL
+UNION ALL
+SELECT c.CUST_INTRL_ID,
+            (case when DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM) - trunc(DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM),-p_Lrf_Digits) = 0 then DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM)
+                  when t.ISSUE_TRXN_ACTVY_AM - trunc(t.ISSUE_TRXN_ACTVY_AM,-p_Lrf_Digits) = 0 then DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM)
+                  when t.CLR_TRXN_ACTVY_AM - trunc(t.CLR_TRXN_ACTVY_AM,-p_Lrf_Digits) = 0 then DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM)
+                  when t.DEP_TRXN_ACTVY_AM - trunc(t.DEP_TRXN_ACTVY_AM,-p_Lrf_Digits) = 0 then DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM)
+                  else 0 end) Lrf_Amt,
+            (case when t.BENEF_NTITY_RISK_NB > 0 or t.BENEF_ACTVY_RISK_NB > 0 then DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM) else 0 end) as Hr_Amt,
+            (case when t.PASS_THRU_FL = 'Y' then DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM) else 0 end) Pass_Thru_Amt,
+            --25048632
+            (SELECT k.BUS_DAY_AGE FROM fccmatomic.KDD_CAL k WHERE k.CLNDR_NM = 'SYSCAL' AND k.CLNDR_DT = t.MANTAS_POST_DT) as BUS_DAY_AGE,
+            (SELECT k.CLNDR_DAY_AGE FROM fccmatomic.KDD_CAL k WHERE k.CLNDR_NM = 'SYSCAL' AND k.CLNDR_DT = t.MANTAS_POST_DT) as CLNDR_DAY_AGE,
+            t.FO_TRXN_SEQ_ID,
+            DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM) as Trxn_Am,
+            DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM)   as Dep_Trans_Amt,
+            1                as Dep_Trans_Ct,
+            0                as WD_Trans_Amt,
+            0                as WD_Trans_Ct,
+            1                as Trans_Ty,
+            1                as Grp_Cd,
+            t.MANTAS_POST_DT as Trans_Dt,
+            t.BENEF_ACCT_ID as ACCT_INTRL_ID,
+            case when t.TRSTD_TRXN_FL = 'Y' then DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM) else 0 end as Trusted_Trxn_Amt,
+            t.FUNC_CRNCY_CD
+       FROM
+            fccmatomic.MI_TRXN t,
+            fccmatomic.ACCT a,
+            fccmatomic.CUST_ACCT ca,
+            fccmatomic.CUST c,
+            fccmatomic.CUST_ACCT_ROLE car
+WHERE
+          t.BENEF_ACCT_ID = a.ACCT_INTRL_ID
+      AND a.ACCT_INTRL_ID = ca.ACCT_INTRL_ID
+      AND ca.CUST_INTRL_ID = c.CUST_INTRL_ID
+      AND ca.CUST_ACCT_ROLE_CD = car.CUST_ACCT_ROLE_CD
+      AND (car.TRDNG_AUTH_FL = 'Y' or car.WDRWL_AUTH_FL = 'Y' or car.POA_FL = 'Y')
+      AND (p_All_Trans_Src_Fl = 'Y' or t.SRC_SYS_CD in (SELECT column_value FROM table (cast (p_Incl_Trans_Src_Lst as Lst))))
+      AND t.INTRL_BENEF_ACCT_FL = 'Y'
+    -- ---------------------------------------------------------------------------------------------------
+      AND a.MANTAS_ACCT_HOLDR_TYPE_CD in (SELECT column_value FROM table (cast (p_Incld_Acct_Hldr_Typ_Cd as Lst)))
+      AND c.CUST_EFCTV_RISK_NB <> -2
+      AND (p_All_Jurisdictions_Fl = 'Y' or c.JRSDCN_CD in (SELECT column_value FROM table (cast (p_Incl_Jurisdictions_Lst as Lst))))
+      AND a.MANTAS_ACCT_BUS_TYPE_CD in (SELECT column_value FROM table (cast (p_Mantas_Bus_Acct_Type_Lst as Lst)))
+    -- ---------------------------------------------------------------------------------------------------
+      AND t.MANTAS_POST_DT in (SELECT k.CLNDR_DT FROM fccmatomic.KDD_CAL k WHERE k.CLNDR_DAY_AGE between 0 and p_Look_Back_Period-1 AND k.CLNDR_NM = 'SYSCAL')
+      AND t.DATA_DUMP_DT in (SELECT k.CLNDR_DT FROM fccmatomic.KDD_CAL k WHERE k.CLNDR_DAY_AGE between 0 and p_Look_Back_Period-1 AND k.CLNDR_NM = 'SYSCAL')
+      -- Cover only GENERAL transactions
+      AND t.MANTAS_TRXN_PURP_CD = 'GENERAL'
+      AND t.MANTAS_TRXN_PRDCT_CD in (SELECT column_value FROM table (cast (p_Incl_MI_Prdct_Type_Lst as Lst)))
+      AND (p_Include_Trusted_Trans_FL = 'Y' or COALESCE(t.TRSTD_TRXN_FL,'N') ='N')
+      -- allow user to include (Y) or exclude (N)  Bank-to-Bank transactions between related parties
+      AND (p_Include_B2B_Trnfr_Fl = 'Y' or NOT(t.BANK_TO_BANK_TRNFR_FL = 'Y' and t.PASS_THRU_FL = 'N'))
+      -- Divide By Zero error handling
+      AND DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM) IS NOT NULL AND DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM) <> 0
+      AND p_Prmry_Cust_Fl = 'N'
+          --30232271
+          --Exclude Canceled and Canceling Transactions
+          AND t.CXL_PAIR_TRXN_INTRL_ID IS NULL
+UNION ALL
+SELECT c.CUST_INTRL_ID,
+            (case when DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM) - trunc(DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM),-p_Lrf_Digits) = 0 then DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM)
+                  when t.ISSUE_TRXN_ACTVY_AM - trunc(t.ISSUE_TRXN_ACTVY_AM,-p_Lrf_Digits) = 0 then DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM)
+                  when t.CLR_TRXN_ACTVY_AM - trunc(t.CLR_TRXN_ACTVY_AM,-p_Lrf_Digits) = 0 then DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM)
+                  when t.DEP_TRXN_ACTVY_AM - trunc(t.DEP_TRXN_ACTVY_AM,-p_Lrf_Digits) = 0 then DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM)
+                  else 0 end) Lrf_Amt,
+            (case when t.SCND_BENEF_NTITY_RISK_NB > 0 or t.SCND_BENEF_ACTVY_RISK_NB > 0 then DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM) else 0 end) as Hr_Amt,
+            (case when t.PASS_THRU_FL = 'Y' then DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM) else 0 end) Pass_Thru_Amt,
+            (SELECT k.BUS_DAY_AGE FROM fccmatomic.KDD_CAL k WHERE k.CLNDR_NM = 'SYSCAL' AND k.CLNDR_DT = t.MANTAS_POST_DT) as BUS_DAY_AGE,
+            (SELECT k.CLNDR_DAY_AGE FROM fccmatomic.KDD_CAL k WHERE k.CLNDR_NM = 'SYSCAL' AND k.CLNDR_DT = t.MANTAS_POST_DT) as CLNDR_DAY_AGE,
+            t.FO_TRXN_SEQ_ID,
+            DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM) as Trxn_Am,
+            DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM)   as Dep_Trans_Amt,
+            1                as Dep_Trans_Ct,
+            0                as WD_Trans_Amt,
+            0                as WD_Trans_Ct,
+            1                as Trans_Ty,
+            1                as Grp_Cd,
+            t.MANTAS_POST_DT as Trans_Dt,
+            t.SCND_BENEF_ACCT_ID as ACCT_INTRL_ID,
+            case when t.TRSTD_TRXN_FL = 'Y' then DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM) else 0 end as Trusted_Trxn_Amt,
+            t.FUNC_CRNCY_CD
+       FROM
+            fccmatomic.MI_TRXN t,
+            fccmatomic.ACCT a,
+            fccmatomic.CUST_ACCT ca,
+            fccmatomic.CUST c,
+            fccmatomic.CUST_ACCT_ROLE car
+WHERE
+          t.SCND_BENEF_ACCT_ID = a.ACCT_INTRL_ID
+      AND a.ACCT_INTRL_ID = ca.ACCT_INTRL_ID
+      AND ca.CUST_INTRL_ID = c.CUST_INTRL_ID
+      AND ca.CUST_ACCT_ROLE_CD = car.CUST_ACCT_ROLE_CD
+      AND (car.TRDNG_AUTH_FL = 'Y' or car.WDRWL_AUTH_FL = 'Y' or car.POA_FL = 'Y')
+      AND (p_All_Trans_Src_Fl = 'Y' or t.SRC_SYS_CD in (SELECT column_value FROM table (cast (p_Incl_Trans_Src_Lst as Lst))))
+      AND t.INTRL_SCND_BENEF_ACCT_FL = 'Y'
+      AND (t.INTRL_BENEF_ACCT_FL <> 'Y'
+          OR
+          c.CUST_INTRL_ID not in (select COALESCE(cta.cust_intrl_id,'NULL')
+                          from fccmatomic.CUST_ACCT cta, fccmatomic.ACCT act, fccmatomic.CUST_ACCT_ROLE car2
+                          where act.acct_intrl_id = cta.acct_intrl_id
+                                and cta.cust_acct_role_cd = car2.cust_acct_role_cd
+                                and (car2.trdng_auth_fl = 'Y' or car2.wdrwl_auth_fl = 'Y' or car2.poa_fl = 'Y')
+                                and act.ACCT_INTRL_ID = t.BENEF_ACCT_ID))
+    -- ---------------------------------------------------------------------------------------------------
+      AND a.MANTAS_ACCT_HOLDR_TYPE_CD in (SELECT column_value FROM table (cast (p_Incld_Acct_Hldr_Typ_Cd as Lst)))
+      AND c.CUST_EFCTV_RISK_NB <> -2
+      AND (p_All_Jurisdictions_Fl = 'Y' or c.JRSDCN_CD in (SELECT column_value FROM table (cast (p_Incl_Jurisdictions_Lst as Lst))))
+      AND a.MANTAS_ACCT_BUS_TYPE_CD in (SELECT column_value FROM table (cast (p_Mantas_Bus_Acct_Type_Lst as Lst)))
+    -- ---------------------------------------------------------------------------------------------------
+      AND t.MANTAS_POST_DT in (SELECT k.CLNDR_DT FROM fccmatomic.KDD_CAL k WHERE k.CLNDR_DAY_AGE between 0 and p_Look_Back_Period-1 AND k.CLNDR_NM = 'SYSCAL')
+      AND t.DATA_DUMP_DT in (SELECT k.CLNDR_DT FROM fccmatomic.KDD_CAL k WHERE k.CLNDR_DAY_AGE between 0 and p_Look_Back_Period-1 AND k.CLNDR_NM = 'SYSCAL')
+      -- Cover only GENERAL transactions
+      AND t.MANTAS_TRXN_PURP_CD = 'GENERAL'
+      AND t.MANTAS_TRXN_PRDCT_CD in (SELECT column_value FROM table (cast (p_Incl_MI_Prdct_Type_Lst as Lst)))
+      AND (p_Include_Trusted_Trans_FL = 'Y' or COALESCE(t.TRSTD_TRXN_FL,'N') ='N')
+      -- allow user to include (Y) or exclude (N)  Bank-to-Bank transactions between related parties
+      AND (p_Include_B2B_Trnfr_Fl = 'Y' or NOT(t.BANK_TO_BANK_TRNFR_FL = 'Y' and t.PASS_THRU_FL = 'N'))
+      -- Divide By Zero error handling
+      AND DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM) IS NOT NULL AND DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM) <> 0
+      AND p_Prmry_Cust_Fl = 'N'
+          --30232271
+          --Exclude Canceled and Canceling Transactions
+          AND t.CXL_PAIR_TRXN_INTRL_ID IS NULL
+    ) mi
+    ----------------------------------------
+    UNION ALL
+    /*********CASH*******/
+   select csh.cust_intrl_id
+        , csh.bus_day_age
+        , csh.Clndr_Day_Age
+        , csh.trxn_am
+        , csh.trans_dt
+        , csh.func_crncy_cd
+    from
+       --ML_StructAvdRprtTshld_CU_Csh_BM1
+       --114016221 csh
+      (SELECT  a.PRMRY_CUST_INTRL_ID as CUST_INTRL_ID,
+            (case when DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM) - trunc(DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM),-p_Lrf_Digits) = 0 then DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM)
+                   when t.TRXN_ACTVY_AM - trunc(t.TRXN_ACTVY_AM,-p_Lrf_Digits) = 0 then DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM) else 0 end) as Lrf_Amt,
+            (case when t.CASH_TRXN_NTITY_RISK_NB > 0 or t.CASH_TRXN_ACTVY_RISK_NB > 0 then DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM) else 0 end) as Hr_Amt,
+            0               as Pass_Thru_Amt,
+           --25048632
+            (SELECT k.BUS_DAY_AGE FROM fccmatomic.KDD_CAL k WHERE k.CLNDR_NM = 'SYSCAL' AND k.CLNDR_DT = t.TRXN_EXCTN_DT) as BUS_DAY_AGE,
+            (SELECT k.CLNDR_DAY_AGE FROM fccmatomic.KDD_CAL k WHERE k.CLNDR_NM = 'SYSCAL' AND k.CLNDR_DT = t.TRXN_EXCTN_DT) as CLNDR_DAY_AGE,
+            t.FO_TRXN_SEQ_ID,
+            DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM) as Trxn_Am,
+            DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM)  as Dep_Trans_Amt,
+            1               as Dep_Trans_Ct,
+            0               as WD_Trans_Amt,
+            0               as WD_Trans_Ct,
+            0               as Trans_Ty,
+            1               as Grp_Cd,
+            t.trxn_exctn_dt as Trans_Dt,
+            t.ACCT_INTRL_ID,
+            t.FUNC_CRNCY_CD
+       FROM fccmatomic.CASH_TRXN t,
+            fccmatomic.ACCT a,
+            fccmatomic.CUST c
+      WHERE
+            t.DBT_CDT_CD = 'C'
+        AND t.ACCT_INTRL_ID = a.ACCT_INTRL_ID
+        AND a.PRMRY_CUST_INTRL_ID is not null
+        AND (p_All_Trans_Src_Fl = 'Y' or t.SRC_SYS_CD in (SELECT column_value FROM table (cast (p_Incl_Trans_Src_Lst as Lst))))
+    -- -----------------------------------------------------------------------------------------------------
+--Bug#21935427
+/*        AND (a.LAST_ACTVY_DT is null or
+            (a.LAST_ACTVY_DT > (SELECT add_days(min(b.CLNDR_DT),-Frequency_Period) FROM fccmatomic.KDD_CAL b WHERE b.CLNDR_NM = 'SYSCAL' AND b.CLNDR_DAY_AGE=0)
+             AND a.LAST_ACTVY_DT <= (SELECT max(b.CLNDR_DT) FROM fccmatomic.KDD_CAL b WHERE b.CLNDR_NM = 'SYSCAL' AND b.CLNDR_DAY_AGE=0))
+            )*/
+        AND c.CUST_INTRL_ID = a.PRMRY_CUST_INTRL_ID
+        AND a.MANTAS_ACCT_HOLDR_TYPE_CD in (SELECT column_value FROM table (cast (p_Incld_Acct_Hldr_Typ_Cd as Lst)))
+        AND c.CUST_EFCTV_RISK_NB <> -2
+        AND (p_All_Jurisdictions_Fl = 'Y' or c.JRSDCN_CD in (SELECT column_value FROM table (cast (p_Incl_Jurisdictions_Lst as Lst))))
+        AND a.MANTAS_ACCT_BUS_TYPE_CD in (SELECT column_value FROM table (cast (p_Mantas_Bus_Acct_Type_Lst as Lst)))
+    -- -----------------------------------------------------------------------------------------------------
+       --25048632
+       AND t.TRXN_EXCTN_DT in (SELECT k.CLNDR_DT FROM fccmatomic.KDD_CAL k WHERE k.CLNDR_DAY_AGE between 0 and p_Look_Back_Period-1 AND k.CLNDR_NM = 'SYSCAL')
+       AND t.DATA_DUMP_DT in (SELECT k.CLNDR_DT FROM fccmatomic.KDD_CAL k WHERE k.CLNDR_DAY_AGE between 0 and p_Look_Back_Period-1 AND k.CLNDR_NM = 'SYSCAL')
+        -- PR32809
+        -- Cover only GENERAL transactions
+        AND t.MANTAS_TRXN_PURP_CD = 'GENERAL'
+        AND t.MANTAS_TRXN_PRDCT_CD in (SELECT column_value FROM table (cast (p_Incl_Csh_Prdct_Type_Lst as Lst)))
+        -- Divide By Zero error handling
+        AND DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM) IS NOT NULL AND DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM) <> 0
+        AND p_Prmry_Cust_Fl = 'Y'
+                --30232271
+                --Exclude Canceled and Canceling Transactions
+                AND t.CXL_PAIR_TRXN_INTRL_ID IS NULL
+UNION ALL
+SELECT  c.CUST_INTRL_ID,
+            (case when DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM) - trunc(DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM),-p_Lrf_Digits) = 0 then DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM)
+                   when t.TRXN_ACTVY_AM - trunc(t.TRXN_ACTVY_AM,-p_Lrf_Digits) = 0 then DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM) else 0 end) as Lrf_Amt,
+            (case when t.CASH_TRXN_NTITY_RISK_NB > 0 or t.CASH_TRXN_ACTVY_RISK_NB > 0 then DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM) else 0 end) as Hr_Amt,
+            0               as Pass_Thru_Amt,
+           --25048632
+            (SELECT k.BUS_DAY_AGE FROM fccmatomic.KDD_CAL k WHERE k.CLNDR_NM = 'SYSCAL' AND k.CLNDR_DT = t.TRXN_EXCTN_DT) as BUS_DAY_AGE,
+            (SELECT k.CLNDR_DAY_AGE FROM fccmatomic.KDD_CAL k WHERE k.CLNDR_NM = 'SYSCAL' AND k.CLNDR_DT = t.TRXN_EXCTN_DT) as CLNDR_DAY_AGE,
+            t.FO_TRXN_SEQ_ID,
+            DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM) as Trxn_Am,
+            DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM)  as Dep_Trans_Amt,
+            1               as Dep_Trans_Ct,
+            0               as WD_Trans_Amt,
+            0               as WD_Trans_Ct,
+            0               as Trans_Ty,
+            1               as Grp_Cd,
+            t.trxn_exctn_dt as Trans_Dt,
+            t.ACCT_INTRL_ID,
+            t.FUNC_CRNCY_CD
+       FROM
+            fccmatomic.CASH_TRXN t,
+            fccmatomic.ACCT a,
+            fccmatomic.CUST_ACCT ca,
+            fccmatomic.CUST c,
+            fccmatomic.CUST_ACCT_ROLE car
+WHERE
+            t.ACCT_INTRL_ID = a.ACCT_INTRL_ID
+        AND a.ACCT_INTRL_ID = ca.ACCT_INTRL_ID
+        AND ca.CUST_INTRL_ID = c.CUST_INTRL_ID
+        AND ca.CUST_ACCT_ROLE_CD = car.CUST_ACCT_ROLE_CD
+        AND (car.TRDNG_AUTH_FL = 'Y' or car.WDRWL_AUTH_FL = 'Y' or car.POA_FL = 'Y')
+        AND t.DBT_CDT_CD = 'C'
+        AND (p_All_Trans_Src_Fl = 'Y' or t.SRC_SYS_CD in (SELECT column_value FROM table (cast (p_Incl_Trans_Src_Lst as Lst))))
+    -- -----------------------------------------------------------------------------------------------------
+--Bug#21935427
+/*        AND (a.LAST_ACTVY_DT is null or
+            (a.LAST_ACTVY_DT > (SELECT add_days(min(b.CLNDR_DT),-Frequency_Period) FROM fccmatomic.KDD_CAL b WHERE b.CLNDR_NM = 'SYSCAL' AND b.CLNDR_DAY_AGE=0)
+             AND a.LAST_ACTVY_DT <= (SELECT max(b.CLNDR_DT) FROM fccmatomic.KDD_CAL b WHERE b.CLNDR_NM = 'SYSCAL' AND b.CLNDR_DAY_AGE=0))
+            )*/
+        AND a.MANTAS_ACCT_HOLDR_TYPE_CD in (SELECT column_value FROM table (cast (p_Incld_Acct_Hldr_Typ_Cd as Lst)))
+        AND c.CUST_EFCTV_RISK_NB <> -2
+        AND (p_All_Jurisdictions_Fl = 'Y' or c.JRSDCN_CD in (SELECT column_value FROM table (cast (p_Incl_Jurisdictions_Lst as Lst))))
+        AND a.MANTAS_ACCT_BUS_TYPE_CD in (SELECT column_value FROM table (cast (p_Mantas_Bus_Acct_Type_Lst as Lst)))
+    -- -----------------------------------------------------------------------------------------------------
+       --25048632
+       AND t.TRXN_EXCTN_DT in (SELECT k.CLNDR_DT FROM fccmatomic.KDD_CAL k WHERE k.CLNDR_DAY_AGE between 0 and p_Look_Back_Period-1 AND k.CLNDR_NM = 'SYSCAL')
+       AND t.DATA_DUMP_DT in (SELECT k.CLNDR_DT FROM fccmatomic.KDD_CAL k WHERE k.CLNDR_DAY_AGE between 0 and p_Look_Back_Period-1 AND k.CLNDR_NM = 'SYSCAL')
+        -- PR32809
+        -- Cover only GENERAL transactions
+        AND t.MANTAS_TRXN_PURP_CD = 'GENERAL'
+        AND t.MANTAS_TRXN_PRDCT_CD in (SELECT column_value FROM table (cast (p_Incl_Csh_Prdct_Type_Lst as Lst)))
+        -- Divide By Zero error handling
+        AND DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM) IS NOT NULL AND DECODE(p_Curr_Type,'F',t.TRXN_FUNC_AM,t.TRXN_BASE_AM) <> 0
+        AND p_Prmry_Cust_Fl = 'N'
+                --30232271
+                --Exclude Canceled and Canceling Transactions
+                AND t.CXL_PAIR_TRXN_INTRL_ID IS NULL
+    ) csh
+  --------------------------------------------
+   )  t
+  group by
+  t.cust_intrl_id
+, t.bus_day_age
+)
+SELECT 
+  DATASET_KEY, CUST_INTRL_ID, TRANS_DT, BUS_DAY_AGE, CLNDR_DAY_AGE, GRP_CD, TRANS_TY,
+  ONE_DAY_AMT, TWO_DAYS_AMT, TWO_CONSECUTIVE_FL, ONE_DAY_AMT_FL, TWO_DAYS_AMT_FL, FUNC_CRNCY_CD, REC_CT
+ FROM
+(select
+     1 as Dataset_key,
+     g.CUST_INTRL_ID
+   , g.Trans_Dt
+   , g.Bus_Day_Age
+   , g.Clndr_Day_Age
+   , 0 Grp_Cd
+   , -1 as Trans_Ty
+   , g.One_Day_Amt
+   , g.One_Day_Amt + COALESCE(t.One_Day_Amt,0) as Two_Days_Amt
+   , case when g.One_Day_Amt = (g.One_Day_Amt + COALESCE(t.One_Day_Amt,0)) then 0 else 1 end as Two_Consecutive_Fl
+   -- it tells us if the first day fall into range
+   , case when g.One_Day_Amt >= p_LE_R1 and g.One_Day_Amt <= p_UE_R1 then 1
+          when g.One_Day_Amt >= p_LE_R2 and g.One_Day_Amt <= p_UE_R2 then 1
+          else 0
+      end as One_Day_Amt_Fl
+   -- it tells us if sum of two consecutive days fall into range and we have two consecutive days
+   , case when ((g.One_Day_Amt + COALESCE(t.One_Day_Amt,0))>= p_LE_R1 and (g.One_Day_Amt + COALESCE(t.One_Day_Amt,0))<= p_UE_R1 and g.One_Day_Amt <> (g.One_Day_Amt + COALESCE(t.One_Day_Amt,0))) then 1
+          when ((g.One_Day_Amt + COALESCE(t.One_Day_Amt,0))>= p_LE_R2 and (g.One_Day_Amt + COALESCE(t.One_Day_Amt,0))<= p_UE_R2 and g.One_Day_Amt <> (g.One_Day_Amt + COALESCE(t.One_Day_Amt,0))) then 1
+          else 0
+      end as Two_Days_Amt_Fl
+  , g.Func_Crncy_Cd
+  , count(1) over (partition by g.CUST_INTRL_ID) as Rec_Ct
+from
+      All_Trxn_B g
+      left outer join All_Trxn_B t on g.CUST_INTRL_ID = t.CUST_INTRL_ID
+                                   and g.bus_day_age = t.bus_day_age - 1
+   ) a
+WHERE
+  --At least one attempt
+  (a.One_Day_Amt_Fl <> 0
+  OR
+   a.Two_Days_Amt_Fl <> 0
+  )
+-- Min Number of Attempts
+AND a.Rec_Ct >= p_Min_Attempts
+ORDER BY a.CUST_INTRL_ID, a.Bus_Day_Age;
+BEGIN
+  FOR rec_cur IN cur (
+                 pLrf_Digits,
+                 pCurr_Type,
+                 pAll_Trans_Src_Fl,
+                 pIncl_Trans_Src_Lst,
+                 pAll_Jurisdictions_Fl,
+                 pIncl_Jurisdictions_Lst,
+                 pMantas_Bus_Acct_Type_Lst,
+                 pLook_Back_Period,
+                 pIncl_MI_Prdct_Type_Lst,
+                 pIncl_Csh_Prdct_Type_Lst,
+                 pInclude_Trusted_Trans_FL,
+                 pInclude_B2B_Trnfr_Fl,
+                 pPrmry_Cust_Fl,
+                 pLE_R1,
+                 pLE_R2,
+                 pUE_R1,
+                 pUE_R2,
+                 pMin_Attempts,
+                 pIncld_Acct_Hldr_Typ_Cd)
+   LOOP
+   INSERT INTO fccmatomic.ML_STRUCTURING_CU_B_TMP
+            VALUES (rec_cur.DATASET_KEY,
+                         rec_cur.CUST_INTRL_ID,
+                         rec_cur.TRANS_DT,
+                         rec_cur.BUS_DAY_AGE,
+                         rec_cur.CLNDR_DAY_AGE,
+                         rec_cur.GRP_CD,
+                         rec_cur.TRANS_TY,
+                         rec_cur.ONE_DAY_AMT,
+                         rec_cur.TWO_DAYS_AMT,
+                         rec_cur.TWO_CONSECUTIVE_FL,
+                         rec_cur.ONE_DAY_AMT_FL,
+                         rec_cur.TWO_DAYS_AMT_FL,
+                         rec_cur.FUNC_CRNCY_CD,
+                         rec_cur.REC_CT);
+   COMMIT;
+   END LOOP;
+COMMIT;
+RETURN(3);
+  EXCEPTION
+  WHEN OTHERS THEN
+     DBMS_OUTPUT.PUT_LINE(sqlerrm);
+     RAISE_APPLICATION_ERROR(-20100,sqlerrm);
+END F_STRUCTURING_CU_B;

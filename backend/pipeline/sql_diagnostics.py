@@ -298,6 +298,75 @@ def _likely_cause(condition: str) -> str:
     return "Condition is too restrictive — no rows satisfy this filter"
 
 
+def _explain_where_equality(conn, condition: str, base_from: str, metadata: dict = None) -> str | None:
+    """
+    For a WHERE equality that looks like a cross-table join
+    (e.g. t.BENEF_ACCT_ID = a.ACCT_INTRL_ID), runs a targeted
+    data-availability check and returns a descriptive sentence,
+    or None if we can't determine anything useful.
+    """
+    eq_match = re.search(r'(\w+)\.(\w+)\s*=\s*(\w+)\.(\w+)', condition)
+    if not eq_match:
+        return None
+
+    left_alias  = eq_match.group(1)
+    left_col    = eq_match.group(2)
+    right_alias = eq_match.group(3)
+    right_col   = eq_match.group(4)
+
+    alias_map = _extract_alias_map(base_from)
+    left_table  = alias_map.get(left_alias.lower(), left_alias)
+    right_table = alias_map.get(right_alias.lower(), right_alias)
+
+    try:
+        # Count distinct keys on each side
+        cursor = conn.cursor()
+        cursor.execute(f"SELECT COUNT(DISTINCT {left_alias}.{left_col}) FROM {left_table} {left_alias}")
+        left_keys = cursor.fetchone()[0]
+        cursor.close()
+
+        cursor = conn.cursor()
+        cursor.execute(f"SELECT COUNT(DISTINCT {right_alias}.{right_col}) FROM {right_table} {right_alias}")
+        right_keys = cursor.fetchone()[0]
+        cursor.close()
+
+        # Count matching pairs with a simple inner join
+        cursor = conn.cursor()
+        match_sql = f"""
+            SELECT COUNT(*)
+            FROM {left_table} {left_alias}
+            INNER JOIN {right_table} {right_alias}
+                ON {left_alias}.{left_col} = {right_alias}.{right_col}
+        """
+        cursor.execute(match_sql)
+        matches = cursor.fetchone()[0]
+        cursor.close()
+
+        if matches == 0:
+            # Determine which side is "empty" relative to the other
+            left_short  = left_table.split('.')[-1].upper()
+            right_short = right_table.split('.')[-1].upper()
+            if left_keys == 0 and right_keys == 0:
+                return f"JOIN {condition} produces 0 rows — both {left_short} and {right_short} are empty."
+            if left_keys == 0:
+                return f"JOIN {condition} produces 0 rows — {left_short} has no values for {left_col}."
+            if right_keys == 0:
+                return f"JOIN {condition} produces 0 rows — {right_short} has no values for {right_col}."
+            return (
+                f"JOIN {condition} produces 0 rows — "
+                f"{left_short} has {left_keys:,} distinct {left_col} values but none match "
+                f"{right_short}'s {right_keys:,} distinct {right_col} values."
+            )
+
+        # Matches > 0 but the full query still returned 0 — other filters are killing it
+        return (
+            f"Equality filter {condition} has {matches:,} matching rows in isolation, "
+            f"but other WHERE / JOIN conditions eliminate all rows."
+        )
+    except Exception:
+        return None
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # THRESHOLD PARAMETER LOOKUP
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1803,6 +1872,18 @@ def diagnose_where_conditions(
                 f"('{tbl}' has {cnt:,} records matching '{flt}', but the combination "
                 f"with other join conditions eliminates all rows.)"
             )
+    else:
+        # For cross-table equalities in WHERE (e.g. t.col = a.col), run a targeted
+        # join-data check so the explanation names the table(s) instead of saying
+        # "Equality filter has no matching values in the data".
+        try:
+            join_explanation = _explain_where_equality(
+                conn, primary_killer, parsed.get("base_from", ""), metadata
+            )
+            if join_explanation:
+                likely = join_explanation
+        except Exception:
+            pass
 
     result = {
         "failure_type":      "WHERE",

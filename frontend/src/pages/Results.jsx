@@ -752,41 +752,59 @@ function RootCauseCard({ rootCause, diagnosticResults }) {
         </div>
       </div>
 
-      <hr style={{ border: "none", borderTop: "1px solid var(--border)", margin: "20px 0" }} />
-
-      {rootCause && <div style={S.rootSummary}>{rootCause}</div>}
+      {(primary?.likely_cause || rootCause) && (
+        <div style={S.rootCauseSummary}>
+          {primary?.likely_cause || rootCause}
+        </div>
+      )}
 
       {primary && (
         <>
           <div style={S.rootGrid}>
-            {primary.failure_type && (
-              <DetailRow label="Failure Type">
-                <span style={{
-                  fontFamily: "var(--font-mono)", color: "var(--danger)",
-                  textTransform: "uppercase", fontSize: "0.8rem", fontWeight: 700,
-                }}>
-                  {primary.failure_type}
-                </span>
-              </DetailRow>
-            )}
-            {primary.likely_cause && (
-              <DetailRow label="Likely Cause">{primary.likely_cause}</DetailRow>
-            )}
-            {primary.condition_line_number && (
-              <DetailRow label="Dataset Query Line">
-                <span style={{
-                  fontFamily: "var(--font-mono)", color: "var(--accent)",
-                  fontSize: "0.85rem", fontWeight: 700,
-                }}>
-                  Line {primary.condition_line_number}
-                </span>
-              </DetailRow>
-            )}
-            {primary.failure_condition && (
-              <DetailRow label="Failing Condition">
-                <pre style={S.conditionPre}>{primary.failure_condition}</pre>
-              </DetailRow>
-            )}
+            {(() => {
+              const rows = [];
+              if (primary.failure_type) {
+                rows.push({
+                  label: "Failure Type",
+                  content: (
+                    <span style={{
+                      fontFamily: "var(--font-mono)", color: "var(--danger)",
+                      textTransform: "uppercase", fontSize: "0.8rem", fontWeight: 700,
+                    }}>
+                      {primary.failure_type}
+                    </span>
+                  ),
+                });
+              }
+              if (primary.likely_cause) {
+                rows.push({ label: "Likely Cause", content: primary.likely_cause });
+              }
+              if (primary.condition_line_number) {
+                rows.push({
+                  label: "Dataset Query Line",
+                  content: (
+                    <span style={{
+                      fontFamily: "var(--font-mono)", color: "var(--accent)",
+                      fontSize: "0.85rem", fontWeight: 700,
+                    }}>
+                      Line {primary.condition_line_number}
+                    </span>
+                  ),
+                });
+              }
+              if (primary.failure_condition) {
+                rows.push({
+                  label: "Failing Condition",
+                  content: <pre style={S.conditionPre}>{primary.failure_condition}</pre>,
+                });
+              }
+              return rows.map((row, i) => (
+                <div key={i} style={{ ...S.detailRow, borderBottom: i === rows.length - 1 ? "none" : S.detailRow.borderBottom }}>
+                  <div style={S.detailLabel}>{row.label}</div>
+                  <div style={S.detailValue}>{row.content}</div>
+                </div>
+              ));
+            })()}
           </div>
 
           {/* ── Threshold Suggestions ── */}
@@ -1620,6 +1638,17 @@ const S = {
     fontSize: "1.2rem",
     fontWeight: 700,
     color: "var(--text-primary)",
+  },
+  rootCauseSummary: {
+    fontSize: "0.9rem",
+    color: "var(--text-secondary)",
+    lineHeight: 1.6,
+    marginTop: "16px",
+    marginBottom: "20px",
+    padding: "14px 16px",
+    background: "var(--bg-overlay)",
+    borderRadius: "var(--radius-md)",
+    fontFamily: "var(--font-mono)",
   },
   rootSummary: {
     fontSize: "0.9rem",

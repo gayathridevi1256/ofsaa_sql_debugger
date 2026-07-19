@@ -99,13 +99,16 @@ def _save_functions_to_files(functions, conn, output_dir, timestamp):
 
 def _extract_function_args_block(sql_text: str) -> str | None:
     """
-    Extract the argument block from the first fccmatomic.F_* function call.
+    Extract the argument block from the first fccmatomic.F_* or fccmatomic.ANOM* function call.
     Properly handles nested parentheses in Lst(...) calls.
     """
-    # Find start of function call
-    func_match = re.search(r'fccmatomic\.F_\w+\s*\(', sql_text, re.IGNORECASE)
+    # Find start of function call (F_* or ANOM*)
+    func_match = re.search(r'fccmatomic\.(?:F_\w+|ANOM\w+)\s*\(', sql_text, re.IGNORECASE)
     if not func_match:
+        print(f"[DEBUG] _extract_function_args_block: No fccmatomic.F_*/ANOM* match in {len(sql_text)} chars")
         return None
+    
+    print(f"[DEBUG] _extract_function_args_block: Matched '{func_match.group()}' at pos {func_match.start()}")
 
     start = func_match.end() - 1  # Position of the first '('
 
@@ -131,9 +134,12 @@ def _extract_parameters_from_sql(sql_text: str) -> list[str]:
     """
     args_text = _extract_function_args_block(sql_text)
     if not args_text:
+        print(f"[DEBUG] _extract_parameters_from_sql: No args block found (func_match failed)")
         return []
 
-    return _split_function_args(args_text)
+    result = _split_function_args(args_text)
+    print(f"[DEBUG] _extract_parameters_from_sql: args_text={len(args_text)} chars, split into {len(result)} args")
+    return result
 
 
 def _split_function_args(text: str) -> list[str]:
@@ -225,11 +231,14 @@ def _extract_parameters(first_ref_sql: str, first_ds_sql: str) -> dict:
 
     # Get args from reference query function call
     ref_args = _extract_parameters_from_sql(first_ref_sql)
+    print(f"[DEBUG] _extract_parameters: ref_args={len(ref_args) if ref_args else 0}: {ref_args[:5] if ref_args else 'None'}...")
 
     # Get args from dataset query function call  
     ds_args = _extract_parameters_from_sql(first_ds_sql)
+    print(f"[DEBUG] _extract_parameters: ds_args={len(ds_args) if ds_args else 0}: {ds_args[:5] if ds_args else 'None'}...")
 
     if not ref_args or not ds_args:
+        print(f"[DEBUG] _extract_parameters: Missing ref_args or ds_args, returning empty")
         return params
 
     # Zip keys from reference args with values from dataset args
@@ -239,6 +248,7 @@ def _extract_parameters(first_ref_sql: str, first_ds_sql: str) -> dict:
         if key and value is not None:
             params[key] = value
 
+    print(f"[DEBUG] _extract_parameters: Final params count={len(params)}")
     return params
 
 
@@ -664,20 +674,39 @@ def _save_queries_to_files(
             print(f"\nSaved Dataset Query (ID: {dataset_id}):\n{dataset_file}")
 
         # Extract and save functions
+        print(f"[DEBUG] multi_query={multi_query}, db_conn={'set' if db_conn else 'None'}")
+        print(f"[DEBUG] queries keys: {list(queries.keys())}")
+        print(f"[DEBUG] main_queries count: {len(queries.get('main_queries', []))}")
+        print(f"[DEBUG] dataset_queries count: {len(queries.get('dataset_queries', []))}")
+        print(f"[DEBUG] 'main' key exists: {'main' in queries and queries['main'] is not None}")
+        print(f"[DEBUG] 'dataset' key exists: {'dataset' in queries and queries['dataset'] is not None}")
+        
         if db_conn:
             functions = _extract_functions_from_first_queries(queries)
+            print(f"\n[DEBUG] Function extraction: found {len(functions)} function(s): {functions}")
             if functions:
                 print(f"\nFound {len(functions)} function(s): {functions}")
                 func_files = _save_functions_to_files(functions, db_conn, output_dir, timestamp)
+                print(f"[DEBUG] Saved {len(func_files)} function file(s): {list(func_files.keys())}")
                 files_saved.update(func_files)
+            else:
+                print(f"[DEBUG] WARNING: No function names found in SQL")
+        else:
+            print(f"[DEBUG] WARNING: db_conn is None - cannot extract functions from Oracle")
 
         # Extract and save parameter key-value pairs
         first_ref = queries.get("main", "")
         first_ds = queries.get("dataset", "")
+        print(f"[DEBUG] Parameter extraction: first_ref={len(first_ref)} chars, first_ds={len(first_ds)} chars")
         if first_ref and first_ds:
             params = _extract_parameters(first_ref, first_ds)
+            print(f"[DEBUG] Extracted {len(params)} parameters: {list(params.keys()) if params else 'None'}")
             if params:
                 _save_parameters_to_json(params, output_dir, timestamp)
+            else:
+                print(f"[DEBUG] WARNING: No parameters extracted from SQL")
+        else:
+            print(f"[DEBUG] WARNING: Missing first_ref or first_ds - cannot extract parameters")
     else:
         # --------------------------------------------------------------
         # SINGLE-QUERY FLOW: Save first query only (old naming)

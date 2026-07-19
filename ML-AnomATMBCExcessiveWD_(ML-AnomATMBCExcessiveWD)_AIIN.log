@@ -1,0 +1,180 @@
+06/29/2026 23:47:55 INFO : Thread ID = 139673174699200:  mantas:   File = mantas.cc:  Line = 180:  
+mantas: ============================================================
+mantas: Starting job 104821 at Mon Jun 29 23:47:55 IST 2026
+mantas: ============================================================
+06/29/2026 23:47:55 INFO : Thread ID = 139673174699200:  mantas:   File = mantas.cc:  Line = 182:  mantas initialized
+06/29/2026 23:47:55 DEBUG : Thread ID = 139673174699200:  mantas:   File = DBAccess.cc:  Line = 140:  Connecting to infodom: FCCMINFO
+06/29/2026 23:47:56 DEBUG : Thread ID = 139673174699200:  mantas:   File = DBAccessAAI.cc:  Line = 140:  Connecting to infodom: FCCMINFO
+06/29/2026 23:47:56 DEBUG : Thread ID = 139673174699200:  mantas:   File = DBAccessAAI.cc:  Line = 150:  Obtained config schema details for: fccmconfigon: demofsaa.jmrinfotechble.com
+06/29/2026 23:47:56 DEBUG : Thread ID = 139673174699200:  mantas:   File = job.cc:  Line = 87:  SELECT a.ALGORITHM_NM, a.EXECUTABLE_NM, b.PARAM_SET_ID, b.CREAT_ID, b.THREAD_CT, b.CLONED_JOB_ID, b.DMN_CD, c.DESC_TX FROM fccmatomic.KDD_ALGORITHM a, fccmatomic.KDD_JOB b, fccmatomic.KDD_PARAM_SET c WHERE b.JOB_ID = 104821 AND b.STATUS_CD != 'IGN' AND b.PARAM_SET_ID = c.PARAM_SET_ID AND a.ALGORITHM_NM = c.ALGORITHM_NM
+06/29/2026 23:47:56 DEBUG : Thread ID = 139673174699200:  mantas:   File = job.cc:  Line = 134:  SELECT a.PARAM_VALUE_TX FROM fccmatomic.KDD_PARAM_BINDING a WHERE a.PARAM_SET_ID = 148201 AND a.ALGORITHM_NM = 'Rule Matcher' AND a.PARAM_NM = 'np'
+06/29/2026 23:47:56 INFO : Thread ID = 139673174699200:  mantas:   File = mantas.cc:  Line = 981:  Job description: ML-AnomATMBCExcessiveWD_(ML-AnomATMBCExcessiveWD)_AIIN
+06/29/2026 23:47:56 DEBUG : Thread ID = 139673174699200:  mantas:   File = jobupdater.cc:  Line = 57:  UPDATE fccmatomic.KDD_JOB SET STATUS_CD = 'RUN' WHERE JOB_ID = 104821
+06/29/2026 23:47:56 DEBUG : Thread ID = 139673174699200:  mantas:   File = jobupdater.cc:  Line = 95:  UPDATE fccmatomic.KDD_JOB SET START_TS = TO_DATE('29/06/2026 11:47:56 PM', 'DD/MM/YYYY HH:MI:SS AM') WHERE JOB_ID = 104821
+06/29/2026 23:47:56 DEBUG : Thread ID = 139673174699200:  mantas:   File = TableBatchControl.cc:  Line = 38:  SELECT a.PRCSNG_BATCH_ID, a.PRCSNG_BATCH_NM, a.DATA_DUMP_DT FROM fccmatomic.KDD_PRCSNG_BATCH_CONTROL a
+06/29/2026 23:47:56 DEBUG : Thread ID = 139673174699200:  mantas:   File = TableJob.cc:  Line = 53:  UPDATE fccmatomic.KDD_JOB SET PRCSNG_BATCH_ID = 133 WHERE JOB_ID = 104821
+06/29/2026 23:47:56 INFO : Thread ID = 139673174699200:  mantas:   File = mantas.cc:  Line = 1004:  Current business date: 31/01/2017
+06/29/2026 23:47:56 DEBUG : Thread ID = 139673174699200:  mantas:   File = job.cc:  Line = 189:  SELECT a.DATASET_ID FROM fccmatomic.KDD_JOB_DATASET a WHERE a.JOB_ID = 104821 ORDER BY a.ORDER_NB
+06/29/2026 23:47:56 DEBUG : Thread ID = 139673174699200:  mantas:   File = job.cc:  Line = 239:  SELECT a.BINDING_NM, a.ATTR_NM, a.LOOP_FL, a.IGNORE_FL, a.MULTIPLE_RUN_FL, a.MULTIPLE_RUN_VALUE_TX FROM fccmatomic.KDD_JOB_DATASET_BINDING a WHERE a.JOB_ID = 104821 AND a.DATASET_ID = 114015970 ORDER BY a.ORDER_NB
+06/29/2026 23:47:56 DEBUG : Thread ID = 139673174699200:  mantas:   File = job.cc:  Line = 239:  SELECT a.BINDING_NM, a.ATTR_NM, a.LOOP_FL, a.IGNORE_FL, a.MULTIPLE_RUN_FL, a.MULTIPLE_RUN_VALUE_TX FROM fccmatomic.KDD_JOB_DATASET_BINDING a WHERE a.JOB_ID = 104821 AND a.DATASET_ID = 114015980 ORDER BY a.ORDER_NB
+06/29/2026 23:47:56 DEBUG : Thread ID = 139673174699200:  mantas:   File = job.cc:  Line = 239:  SELECT a.BINDING_NM, a.ATTR_NM, a.LOOP_FL, a.IGNORE_FL, a.MULTIPLE_RUN_FL, a.MULTIPLE_RUN_VALUE_TX FROM fccmatomic.KDD_JOB_DATASET_BINDING a WHERE a.JOB_ID = 104821 AND a.DATASET_ID = 118746893 ORDER BY a.ORDER_NB
+06/29/2026 23:47:56 DEBUG : Thread ID = 139673174699200:  mantas:   File = job.cc:  Line = 559:  INSERT INTO fccmatomic.KDD_RUN (RUN_ID, JOB_ID, RUN_STATUS_CD) VALUES (48001, 104821 , 'NEW')
+06/29/2026 23:47:56 INFO : Thread ID = 139673174699200:  mantas:   File = mantas.cc:  Line = 549:  Loading librule_matcher.so
+06/29/2026 23:47:56 DEBUG : Thread ID = 139671433582336:  mantas:   File = runupdater.cc:  Line = 59:  UPDATE fccmatomic.KDD_RUN SET RUN_STATUS_CD = 'RUN' WHERE RUN_ID = 48001
+06/29/2026 23:47:56 DEBUG : Thread ID = 139671433582336:  mantas:   File = runupdater.cc:  Line = 104:  UPDATE fccmatomic.KDD_RUN SET RUN_MSG_TX = :Msg WHERE RUN_ID = 48001
+06/29/2026 23:47:56 DEBUG : Thread ID = 139671433582336:  mantas:   File = runupdater.cc:  Line = 142:  UPDATE fccmatomic.KDD_RUN SET RUN_MSG_TX = :Msg WHERE RUN_ID = 48001
+06/29/2026 23:47:56 DEBUG : Thread ID = 139671433582336:  mantas:   File = runupdater.cc:  Line = 163:  UPDATE fccmatomic.KDD_RUN SET START_TS = TO_DATE('29/06/2026 11:47:56 PM', 'DD/MM/YYYY HH:MI:SS AM') WHERE RUN_ID = 48001
+06/29/2026 23:47:56 DEBUG : Thread ID = 139671433582336:  mantas:   File = run.cc:  Line = 147:  SELECT a.JOB_ID FROM fccmatomic.KDD_RUN a WHERE a.RUN_ID = 48001
+06/29/2026 23:47:56 DEBUG : Thread ID = 139671433582336:  mantas:   File = job.cc:  Line = 87:  SELECT a.ALGORITHM_NM, a.EXECUTABLE_NM, b.PARAM_SET_ID, b.CREAT_ID, b.THREAD_CT, b.CLONED_JOB_ID, b.DMN_CD, c.DESC_TX FROM fccmatomic.KDD_ALGORITHM a, fccmatomic.KDD_JOB b, fccmatomic.KDD_PARAM_SET c WHERE b.JOB_ID = 104821 AND b.STATUS_CD != 'IGN' AND b.PARAM_SET_ID = c.PARAM_SET_ID AND a.ALGORITHM_NM = c.ALGORITHM_NM
+06/29/2026 23:47:56 DEBUG : Thread ID = 139671433582336:  mantas:   File = job.cc:  Line = 134:  SELECT a.PARAM_VALUE_TX FROM fccmatomic.KDD_PARAM_BINDING a WHERE a.PARAM_SET_ID = 148201 AND a.ALGORITHM_NM = 'Rule Matcher' AND a.PARAM_NM = 'np'
+06/29/2026 23:47:56 DEBUG : Thread ID = 139671433582336:  mantas:   File = job.cc:  Line = 189:  SELECT a.DATASET_ID FROM fccmatomic.KDD_JOB_DATASET a WHERE a.JOB_ID = 104821 ORDER BY a.ORDER_NB
+06/29/2026 23:47:56 DEBUG : Thread ID = 139671433582336:  mantas:   File = job.cc:  Line = 239:  SELECT a.BINDING_NM, a.ATTR_NM, a.LOOP_FL, a.IGNORE_FL, a.MULTIPLE_RUN_FL, a.MULTIPLE_RUN_VALUE_TX FROM fccmatomic.KDD_JOB_DATASET_BINDING a WHERE a.JOB_ID = 104821 AND a.DATASET_ID = 114015970 ORDER BY a.ORDER_NB
+06/29/2026 23:47:56 DEBUG : Thread ID = 139671433582336:  mantas:   File = job.cc:  Line = 239:  SELECT a.BINDING_NM, a.ATTR_NM, a.LOOP_FL, a.IGNORE_FL, a.MULTIPLE_RUN_FL, a.MULTIPLE_RUN_VALUE_TX FROM fccmatomic.KDD_JOB_DATASET_BINDING a WHERE a.JOB_ID = 104821 AND a.DATASET_ID = 114015980 ORDER BY a.ORDER_NB
+06/29/2026 23:47:56 DEBUG : Thread ID = 139671433582336:  mantas:   File = job.cc:  Line = 239:  SELECT a.BINDING_NM, a.ATTR_NM, a.LOOP_FL, a.IGNORE_FL, a.MULTIPLE_RUN_FL, a.MULTIPLE_RUN_VALUE_TX FROM fccmatomic.KDD_JOB_DATASET_BINDING a WHERE a.JOB_ID = 104821 AND a.DATASET_ID = 118746893 ORDER BY a.ORDER_NB
+06/29/2026 23:47:56 DEBUG : Thread ID = 139671433582336:  mantas:   File = job.cc:  Line = 356:  SELECT a.BINDING_NM, a.BINDING_VALUE_TX, a.LOWER_BOUND, a.UPPER_BOUND FROM fccmatomic.KDD_RUN_DATASET_BINDING a WHERE a.RUN_ID = 48001 AND a.DATASET_ID = 114015970
+06/29/2026 23:47:56 DEBUG : Thread ID = 139671433582336:  mantas:   File = job.cc:  Line = 356:  SELECT a.BINDING_NM, a.BINDING_VALUE_TX, a.LOWER_BOUND, a.UPPER_BOUND FROM fccmatomic.KDD_RUN_DATASET_BINDING a WHERE a.RUN_ID = 48001 AND a.DATASET_ID = 114015980
+06/29/2026 23:47:56 DEBUG : Thread ID = 139671433582336:  mantas:   File = job.cc:  Line = 356:  SELECT a.BINDING_NM, a.BINDING_VALUE_TX, a.LOWER_BOUND, a.UPPER_BOUND FROM fccmatomic.KDD_RUN_DATASET_BINDING a WHERE a.RUN_ID = 48001 AND a.DATASET_ID = 118746893
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  mantas:   File = dbparameter.cc:  Line = 51:  SELECT ALGORITHM_NM FROM fccmatomic.KDD_PARAM_SET a WHERE PARAM_SET_ID = 148201
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  mantas:   File = dbparameter.cc:  Line = 134:  SELECT a.PARAM_NM, a.PARAM_TYPE_CD, b.DEFAULT_VALUE_TX FROM fccmatomic.KDD_ALGORITHM_PARAM a, fccmatomic.KDD_PARAM_DEFAULT b WHERE a.ALGORITHM_NM = 'Rule Matcher' AND a.ALGORITHM_NM = b.ALGORITHM_NM AND a.PARAM_NM = b.PARAM_NM
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  mantas:   File = dbparameter.cc:  Line = 134:  SELECT a.PARAM_NM, a.PARAM_TYPE_CD, b.PARAM_VALUE_TX FROM fccmatomic.KDD_ALGORITHM_PARAM a, fccmatomic.KDD_PARAM_BINDING b WHERE b.PARAM_SET_ID = 148201 AND a.PARAM_NM = b.PARAM_NM AND a.ALGORITHM_NM = b.ALGORITHM_NM
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = TablePattern.cc:  Line = 94:  SELECT a.DEACT_TS, a.PTTRN_TYPE_CD FROM fccmatomic.KDD_PTTRN a WHERE a.PTTRN_ID = 114000541
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = TablePattern.cc:  Line = 63:  SELECT a.SCNRO_ID FROM fccmatomic.KDD_PTTRN a WHERE a.PTTRN_ID = 114000541
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = runupdater.cc:  Line = 104:  UPDATE fccmatomic.KDD_RUN SET RUN_MSG_TX = :Msg WHERE RUN_ID = 48001
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = runupdater.cc:  Line = 142:  UPDATE fccmatomic.KDD_RUN SET RUN_MSG_TX = :Msg WHERE RUN_ID = 48001
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = TablePatternDataset.cc:  Line = 35:  SELECT a.DATASET_ID FROM fccmatomic.KDD_PTTRN_DATASET a WHERE a.PTTRN_ID = 114000541 ORDER BY a.ORDER_NB
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = dsbuilder.cc:  Line = 66:  SELECT a.REALIZED_NM, a.DATASET_NM, a.PRNT_DATASET_ID FROM fccmatomic.KDD_DATASET a WHERE a.DATASET_ID = 114015970
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = dsbuilder.cc:  Line = 151:  SELECT a.ATTR_ID, UPPER(a.ATTR_NM) , a.TYPE_CD, a.ORDER_FL, a.DISCRETE_FL, b.KEY_FL, b.NAME_FL FROM fccmatomic.KDD_ATTR a, fccmatomic.KDD_DATASET_ATTR b WHERE b.DATASET_ID = 114015970 AND a.ATTR_ID = b.ATTR_ID
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = dsbuilder.cc:  Line = 248:  SELECT a.TAG_NM, a.TAG_VALUE_TX FROM fccmatomic.KDD_ATTR_TAG a WHERE a.ATTR_ID = 113001562
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = dsbuilder.cc:  Line = 248:  SELECT a.TAG_NM, a.TAG_VALUE_TX FROM fccmatomic.KDD_ATTR_TAG a WHERE a.ATTR_ID = 113001742
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = dsbuilder.cc:  Line = 248:  SELECT a.TAG_NM, a.TAG_VALUE_TX FROM fccmatomic.KDD_ATTR_TAG a WHERE a.ATTR_ID = 113001744
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = dsbuilder.cc:  Line = 248:  SELECT a.TAG_NM, a.TAG_VALUE_TX FROM fccmatomic.KDD_ATTR_TAG a WHERE a.ATTR_ID = 113001817
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = dsbuilder.cc:  Line = 248:  SELECT a.TAG_NM, a.TAG_VALUE_TX FROM fccmatomic.KDD_ATTR_TAG a WHERE a.ATTR_ID = 114004330
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = dsbuilder.cc:  Line = 248:  SELECT a.TAG_NM, a.TAG_VALUE_TX FROM fccmatomic.KDD_ATTR_TAG a WHERE a.ATTR_ID = 114004333
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = dsbuilder.cc:  Line = 248:  SELECT a.TAG_NM, a.TAG_VALUE_TX FROM fccmatomic.KDD_ATTR_TAG a WHERE a.ATTR_ID = 114004334
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = dsbuilder.cc:  Line = 248:  SELECT a.TAG_NM, a.TAG_VALUE_TX FROM fccmatomic.KDD_ATTR_TAG a WHERE a.ATTR_ID = 114004337
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = dsbuilder.cc:  Line = 248:  SELECT a.TAG_NM, a.TAG_VALUE_TX FROM fccmatomic.KDD_ATTR_TAG a WHERE a.ATTR_ID = 118746130
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = dsbuilder.cc:  Line = 248:  SELECT a.TAG_NM, a.TAG_VALUE_TX FROM fccmatomic.KDD_ATTR_TAG a WHERE a.ATTR_ID = 118746131
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = dsbuilder.cc:  Line = 248:  SELECT a.TAG_NM, a.TAG_VALUE_TX FROM fccmatomic.KDD_ATTR_TAG a WHERE a.ATTR_ID = 118746133
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = dsbuilder.cc:  Line = 248:  SELECT a.TAG_NM, a.TAG_VALUE_TX FROM fccmatomic.KDD_ATTR_TAG a WHERE a.ATTR_ID = 118746194
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = dsbuilder.cc:  Line = 248:  SELECT a.TAG_NM, a.TAG_VALUE_TX FROM fccmatomic.KDD_ATTR_TAG a WHERE a.ATTR_ID = 118860478
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = dsbuilder.cc:  Line = 290:  SELECT a.TRANSFORM_TX, a.REALIZED_FL FROM fccmatomic.KDD_TRANSFORM a WHERE a.DATASET_ID = 114015970 ORDER BY a.TRANSFORM_NB
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = dsbuilder.cc:  Line = 66:  SELECT a.REALIZED_NM, a.DATASET_NM, a.PRNT_DATASET_ID FROM fccmatomic.KDD_DATASET a WHERE a.DATASET_ID = 114015980
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = dsbuilder.cc:  Line = 151:  SELECT a.ATTR_ID, UPPER(a.ATTR_NM) , a.TYPE_CD, a.ORDER_FL, a.DISCRETE_FL, b.KEY_FL, b.NAME_FL FROM fccmatomic.KDD_ATTR a, fccmatomic.KDD_DATASET_ATTR b WHERE b.DATASET_ID = 114015980 AND a.ATTR_ID = b.ATTR_ID
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = dsbuilder.cc:  Line = 248:  SELECT a.TAG_NM, a.TAG_VALUE_TX FROM fccmatomic.KDD_ATTR_TAG a WHERE a.ATTR_ID = 113001550
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = dsbuilder.cc:  Line = 248:  SELECT a.TAG_NM, a.TAG_VALUE_TX FROM fccmatomic.KDD_ATTR_TAG a WHERE a.ATTR_ID = 118746138
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = dsbuilder.cc:  Line = 248:  SELECT a.TAG_NM, a.TAG_VALUE_TX FROM fccmatomic.KDD_ATTR_TAG a WHERE a.ATTR_ID = 118746139
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = dsbuilder.cc:  Line = 248:  SELECT a.TAG_NM, a.TAG_VALUE_TX FROM fccmatomic.KDD_ATTR_TAG a WHERE a.ATTR_ID = 118746140
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = dsbuilder.cc:  Line = 248:  SELECT a.TAG_NM, a.TAG_VALUE_TX FROM fccmatomic.KDD_ATTR_TAG a WHERE a.ATTR_ID = 118746195
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = dsbuilder.cc:  Line = 290:  SELECT a.TRANSFORM_TX, a.REALIZED_FL FROM fccmatomic.KDD_TRANSFORM a WHERE a.DATASET_ID = 114015980 ORDER BY a.TRANSFORM_NB
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = dsbuilder.cc:  Line = 66:  SELECT a.REALIZED_NM, a.DATASET_NM, a.PRNT_DATASET_ID FROM fccmatomic.KDD_DATASET a WHERE a.DATASET_ID = 118746893
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = dsbuilder.cc:  Line = 151:  SELECT a.ATTR_ID, UPPER(a.ATTR_NM) , a.TYPE_CD, a.ORDER_FL, a.DISCRETE_FL, b.KEY_FL, b.NAME_FL FROM fccmatomic.KDD_ATTR a, fccmatomic.KDD_DATASET_ATTR b WHERE b.DATASET_ID = 118746893 AND a.ATTR_ID = b.ATTR_ID
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = dsbuilder.cc:  Line = 248:  SELECT a.TAG_NM, a.TAG_VALUE_TX FROM fccmatomic.KDD_ATTR_TAG a WHERE a.ATTR_ID = 113580581
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = dsbuilder.cc:  Line = 248:  SELECT a.TAG_NM, a.TAG_VALUE_TX FROM fccmatomic.KDD_ATTR_TAG a WHERE a.ATTR_ID = 118746135
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = dsbuilder.cc:  Line = 248:  SELECT a.TAG_NM, a.TAG_VALUE_TX FROM fccmatomic.KDD_ATTR_TAG a WHERE a.ATTR_ID = 118746196
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = dsbuilder.cc:  Line = 290:  SELECT a.TRANSFORM_TX, a.REALIZED_FL FROM fccmatomic.KDD_TRANSFORM a WHERE a.DATASET_ID = 118746893 ORDER BY a.TRANSFORM_NB
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = OracleSchema.cc:  Line = 126:  SELECT a.DATA_TYPE, a.DATA_PRECISION, a.DATA_SCALE, UPPER(a.COLUMN_NAME) FROM ALL_TAB_COLS a WHERE a.TABLE_NAME = 'DSVIEW114015970' AND a.OWNER = UPPER('fccmatomic')
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = TableDataset.cc:  Line = 169:  SELECT a.DATASET_ID, a.PRNT_DATASET_ID, a.DATASET_NM, a.USER_ID, a.CREATE_DT, a.REALIZED_NM, a.SQL_FL, a.SQL_CMMNT, a.SCNRO_ID, a.SQL_TX FROM fccmatomic.KDD_DATASET a WHERE a.SCNRO_ID = 116000065 ORDER BY a.DATASET_ID
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = TableThreshold.cc:  Line = 96:  SELECT a.TSHLD_NM, a.CURR_VALUE_TX, a.VALUE_TYPE_CD, a.DPLY_NM, a.DSPLY_SORT_ORDR_NB, a.DSPLY_FL, b.TSHLD_SET_NM FROM fccmatomic.KDD_TSHLD a, fccmatomic.KDD_TSHLD_SET b WHERE a.SCNRO_ID = 116000065 AND a.TSHLD_SET_ID = 41 AND b.TSHLD_SET_ID = 41 AND a.DEACT_TS IS NULL
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = OracleSchema.cc:  Line = 126:  SELECT a.DATA_TYPE, a.DATA_PRECISION, a.DATA_SCALE, UPPER(a.COLUMN_NAME) FROM ALL_TAB_COLS a WHERE a.TABLE_NAME = 'DSVIEW114015980' AND a.OWNER = UPPER('fccmatomic')
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = OracleSchema.cc:  Line = 126:  SELECT a.DATA_TYPE, a.DATA_PRECISION, a.DATA_SCALE, UPPER(a.COLUMN_NAME) FROM ALL_TAB_COLS a WHERE a.TABLE_NAME = 'DSVIEW118746893' AND a.OWNER = UPPER('fccmatomic')
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = runupdater.cc:  Line = 104:  UPDATE fccmatomic.KDD_RUN SET RUN_MSG_TX = :Msg WHERE RUN_ID = 48001
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = runupdater.cc:  Line = 142:  UPDATE fccmatomic.KDD_RUN SET RUN_MSG_TX = :Msg WHERE RUN_ID = 48001
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = dbparse.cc:  Line = 148:  SELECT a.PTTRN_TX FROM fccmatomic.KDD_SEQ_PTTRN a WHERE a.PTTRN_ID = 114000541
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = TableThreshold.cc:  Line = 96:  SELECT a.TSHLD_NM, a.CURR_VALUE_TX, a.VALUE_TYPE_CD, a.DPLY_NM, a.DSPLY_SORT_ORDR_NB, a.DSPLY_FL, b.TSHLD_SET_NM FROM fccmatomic.KDD_TSHLD a, fccmatomic.KDD_TSHLD_SET b WHERE a.SCNRO_ID = 116000065 AND a.TSHLD_SET_ID = 41 AND b.TSHLD_SET_ID = 41 AND a.DEACT_TS IS NULL
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = runupdater.cc:  Line = 104:  UPDATE fccmatomic.KDD_RUN SET RUN_MSG_TX = :Msg WHERE RUN_ID = 48001
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = runupdater.cc:  Line = 142:  UPDATE fccmatomic.KDD_RUN SET RUN_MSG_TX = :Msg WHERE RUN_ID = 48001
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = TableInstallParameter.cc:  Line = 198:  SELECT a.ATTR_1_CD, a.ATTR_1_VALUE_TX, a.ATTR_2_CD, a.ATTR_2_VALUE_TX, a.ATTR_3_CD, a.ATTR_3_VALUE_TX, a.ATTR_4_CD, a.ATTR_4_VALUE_TX, a.ATTR_5_CD, a.ATTR_5_VALUE_TX, a.ATTR_6_CD, a.ATTR_6_VALUE_TX, a.ATTR_7_CD, a.ATTR_7_VALUE_TX, a.ATTR_8_CD, a.ATTR_8_VALUE_TX, a.ATTR_9_CD, a.ATTR_9_VALUE_TX, a.ATTR_10_CD, a.ATTR_10_VALUE_TX, a.ATTR_11_CD, a.ATTR_11_VALUE_TX, a.ATTR_12_CD, a.ATTR_12_VALUE_TX, a.ATTR_13_CD, a.ATTR_13_VALUE_TX, a.ATTR_14_CD, a.ATTR_14_VALUE_TX, a.ATTR_15_CD, a.ATTR_15_VALUE_TX FROM fccmatomic.KDD_INSTALL_PARAM a WHERE a.PARAM_NM = 'DLY'
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = TableInstallParameter.cc:  Line = 198:  SELECT a.ATTR_1_CD, a.ATTR_1_VALUE_TX, a.ATTR_2_CD, a.ATTR_2_VALUE_TX, a.ATTR_3_CD, a.ATTR_3_VALUE_TX, a.ATTR_4_CD, a.ATTR_4_VALUE_TX, a.ATTR_5_CD, a.ATTR_5_VALUE_TX, a.ATTR_6_CD, a.ATTR_6_VALUE_TX, a.ATTR_7_CD, a.ATTR_7_VALUE_TX, a.ATTR_8_CD, a.ATTR_8_VALUE_TX, a.ATTR_9_CD, a.ATTR_9_VALUE_TX, a.ATTR_10_CD, a.ATTR_10_VALUE_TX, a.ATTR_11_CD, a.ATTR_11_VALUE_TX, a.ATTR_12_CD, a.ATTR_12_VALUE_TX, a.ATTR_13_CD, a.ATTR_13_VALUE_TX, a.ATTR_14_CD, a.ATTR_14_VALUE_TX, a.ATTR_15_CD, a.ATTR_15_VALUE_TX FROM fccmatomic.KDD_INSTALL_PARAM a WHERE a.PARAM_NM = 'RMT_ROLES'
+06/29/2026 23:47:57 INFO : Thread ID = 139671433582336:  Rule Matcher:   File = RuleMatcher.cc:  Line = 273:  Beginning Processing Primary Rule: 
+  Job: 104821
+  Run: 48001
+  Pattern: 114000541
+  Dataset: 114015970
+  Focus Type: CUSTOMER
+  Focal Attribute: CUST_INTRL_ID 
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = UtilityFunctions.cc:  Line = 497:  alter session enable parallel query
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = UtilityFunctions.cc:  Line = 522:  alter session enable parallel dml
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = dscursor.cc:  Line = 1161:  Found a reference to a dataset.  Calling getDatasetSql to resolve thresholds.  Id = 114015970 
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = dscursor.cc:  Line = 1175:  After expansion, sql = SELECT ot.TRXN_EXCTN_DT, ot.CUST_INTRL_ID, ot.CUST_SEQ_ID, ot.CUST_EFCTV_RISK_NB, ot.OVERALL_RISK, ot.HR_PRCTG, ot.LRF_PRCTG, ot.ACTVTY_RISK_LVL, ot.TWO_DAY_AVG_AMT, ot.HIST_DAILY_AVG_AMT, ot.PCT_AVG_AMT_INCR, ot.DAY_NO, ot.FUNC_CRNCY_CD FROM (SELECT 
+  CUST_INTRL_ID,
+  CUST_SEQ_ID,  
+  TRXN_EXCTN_DT,
+  Day_no,  
+  TWO_DAY_AVG_AMT,
+  HIST_DAILY_AVG_AMT,
+  PCT_AVG_AMT_INCR,  
+  Overall_Risk,
+  CUST_EFCTV_RISK_NB,
+  Actvty_Risk_Lvl,
+  Hr_Prctg,
+  Lrf_Prctg,
+  FUNC_CRNCY_CD              
+  FROM TABLE(fccmatomic.ANOMATMEXCESS_PIPELINE( 
+              @Actvty_Risk_Cutoff_Lvl,
+              @All_Jurisdictions_Fl,
+              @All_Trans_Src_Fl,
+              @Curr_Type,
+              @Day_Type,
+              @Effctv_Risk_Cutoff_Lvl,
+              @HR_Min_Daily_Average_ATM_WD_Amt,
+              @HR_Pct_Daily_ATM_WD_Amt_Increase,
+              fccmatomic.Lst(@Incl_Jurisdictions_Lst),
+              fccmatomic.Lst(@Incl_Trans_Src_Lst),
+              @Look_Back_Period,
+              @Lrf_Digits,
+              @MR_Min_Daily_Average_ATM_WD_Amt,
+              @MR_Pct_Daily_ATM_WD_Amt_Increase,
+              fccmatomic.Lst(@Mantas_Bus_Acct_Type_Lst),  
+              @Max_Days_To_Cover,
+              @Prmry_Cust_Fl,
+              @RR_Min_Daily_Average_ATM_WD_Amt,
+              @RR_Pct_Daily_ATM_WD_Amt_Increase ))
+ ) ot ORDER BY ot.CUST_SEQ_ID 
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = dscursor.cc:  Line = 748:  Preparing to select from dataset 114015970 
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = dscursor.cc:  Line = 754:  SELECT  ot.TRXN_EXCTN_DT, ot.CUST_INTRL_ID, ot.CUST_SEQ_ID, ot.CUST_EFCTV_RISK_NB, ot.OVERALL_RISK, ot.HR_PRCTG, ot.LRF_PRCTG, ot.ACTVTY_RISK_LVL, ot.TWO_DAY_AVG_AMT, ot.HIST_DAILY_AVG_AMT, ot.PCT_AVG_AMT_INCR, ot.DAY_NO, ot.FUNC_CRNCY_CD FROM (SELECT 
+  CUST_INTRL_ID,
+  CUST_SEQ_ID,  
+  TRXN_EXCTN_DT,
+  Day_no,  
+  TWO_DAY_AVG_AMT,
+  HIST_DAILY_AVG_AMT,
+  PCT_AVG_AMT_INCR,  
+  Overall_Risk,
+  CUST_EFCTV_RISK_NB,
+  Actvty_Risk_Lvl,
+  Hr_Prctg,
+  Lrf_Prctg,
+  FUNC_CRNCY_CD              
+  FROM TABLE(fccmatomic.ANOMATMEXCESS_PIPELINE( 
+              5,
+              'N',
+              'Y',
+              'B',
+              'Bus',
+              5,
+              1000,
+              50,
+              fccmatomic.Lst('AIIN'),
+              fccmatomic.Lst('Inactive'),
+              3,
+              4,
+              1000,
+              50,
+              fccmatomic.Lst('RBK', 'RBR'),  
+              1,
+              'Y',
+              1000,
+              50 ))
+ ) ot ORDER BY ot.CUST_SEQ_ID
+06/29/2026 23:47:57 INFO : Thread ID = 139671433582336:  Rule Matcher:   File = RuleMatcher.cc:  Line = 166:  
+Run 48001 running against Pattern 114000541 generated 0 matches.
+Elapsed time for matching: 00:00:00 
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = runupdater.cc:  Line = 104:  UPDATE fccmatomic.KDD_RUN SET RUN_MSG_TX = :Msg WHERE RUN_ID = 48001
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = runupdater.cc:  Line = 142:  UPDATE fccmatomic.KDD_RUN SET RUN_MSG_TX = :Msg WHERE RUN_ID = 48001
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = runupdater.cc:  Line = 59:  UPDATE fccmatomic.KDD_RUN SET RUN_STATUS_CD = 'FIN' WHERE RUN_ID = 48001
+06/29/2026 23:47:57 DEBUG : Thread ID = 139671433582336:  Rule Matcher:   File = runupdater.cc:  Line = 198:  UPDATE fccmatomic.KDD_RUN SET END_TS = TO_DATE('29/06/2026 11:47:57 PM','DD/MM/YYYY HH:MI:SS AM') WHERE RUN_ID = 48001
+06/29/2026 23:47:57 DEBUG : Thread ID = 139673174699200:  Rule Matcher:   File = jobupdater.cc:  Line = 57:  UPDATE fccmatomic.KDD_JOB SET STATUS_CD = 'FIN' WHERE JOB_ID = 104821
+06/29/2026 23:47:57 INFO : Thread ID = 139673174699200:  Rule Matcher:   File = mantas.cc:  Line = 697:  
+mantas: ============================================================
+mantas: Exiting job 104821 at Mon Jun 29 23:47:57 IST 2026 with code 0
+mantas: ============================================================

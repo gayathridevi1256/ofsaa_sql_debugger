@@ -28,6 +28,7 @@ HOW PROGRESS STREAMING WORKS:
 """
 
 import os
+import re
 import sys
 import json
 import asyncio
@@ -489,10 +490,11 @@ def _step_execute_resolved_function(state: dict) -> str:
     # Find function SQL file
     func_files = [
         f for f in os.listdir(extracted_dir)
-        if f.upper().startswith("F_") and f.endswith(".sql")
+        if f.lower().endswith(".sql")
+        and (f.upper().startswith("F_") or f.upper().startswith("ANOM"))
     ]
     if not func_files:
-        raise FileNotFoundError(f"No F_*.sql function files found in {extracted_dir}")
+        raise FileNotFoundError(f"No function SQL files (F_*.sql or ANOM*.sql) found in {extracted_dir}")
 
     # Find parameters JSON file
     param_files = [
@@ -532,7 +534,8 @@ def _step_execute_resolved_function(state: dict) -> str:
     resolved_sql = extracted_sql
     unmatched = []
     for key, value in params.items():
-        pattern = _re.compile(_re.escape(key), _re.IGNORECASE)
+        # Use word boundary to match full parameter name
+        pattern = _re.compile(r'\b' + _re.escape(key) + r'\b', _re.IGNORECASE)
         if pattern.search(resolved_sql):
             resolved_sql = pattern.sub(str(value), resolved_sql)
         else:
@@ -543,32 +546,82 @@ def _step_execute_resolved_function(state: dict) -> str:
         print(f"\n  Direct match failed for {len(unmatched)} params, trying fuzzy match...")
         for key, value in unmatched:
             found = False
-            # Try removing "Trxn" and fix double underscore
-            alt = key.replace("Trxn", "").replace("__", "_")
-            if alt != key:
-                pattern = _re.compile(_re.escape(alt), _re.IGNORECASE)
-                if pattern.search(resolved_sql):
+            
+            # Generate multiple variations to try
+            variations = [key]
+            
+            # Common OFSAA abbreviations: full_name -> abbreviation
+            abbreviations = {
+                "Average": ["Avg", "Avr"],
+                "Increase": ["Incr", "Inc"],
+                "Minimum": ["Min"],
+                "Maximum": ["Max"],
+                "Amount": ["Amt"],
+                "Percentage": ["Pct"],
+                "Transaction": ["Trxn"],
+                "Cash": ["Csh"],
+                "Daily": ["Dly"],
+                "Number": ["Num"],
+                "Sequential": ["Seq"],
+                "Excessive": ["Excss"],
+                "Withdrawal": ["WD"],
+                "Account": ["Acct"],
+                "Description": ["Desc"],
+                "Threshold": ["Tshld"],
+                "Business": ["Bus"],
+                "Customer": ["Cust"],
+                "Reference": ["Ref"],
+                "Jurisdiction": ["Jrsd"],
+                "Effective": ["Effctv"],
+                "Period": ["Prd"],
+            }
+            
+            # Try each abbreviation replacement
+            for full, abbr_list in abbreviations.items():
+                for abbr in abbr_list:
+                    if full in key:
+                        variations.append(key.replace(full, abbr))
+                    if abbr in key:
+                        variations.append(key.replace(abbr, full))
+            
+            # Try removing double underscores
+            variations.append(key.replace("__", "_"))
+            
+            # Try with "Trxn" removed
+            if "Trxn" in key:
+                variations.append(key.replace("Trxn", ""))
+            
+            # Try combinations of abbreviations
+            for full, abbr_list in abbreviations.items():
+                for abbr in abbr_list:
+                    if full in key:
+                        variations.append(key.replace(full, abbr).replace("__", "_"))
+            
+            # Remove duplicates and try each variation
+            variations = list(set(variations))
+            print(f"    Trying {len(variations)} variations for {key}: {variations[:5]}...")
+            
+            # Show a snippet of SQL around where we expect the param
+            key_snippet = key.replace("p_", "")[:30]
+            sql_snippet_idx = resolved_sql.upper().find(key_snippet.upper())
+            if sql_snippet_idx >= 0:
+                print(f"    DEBUG: Found '{key_snippet}' in SQL at pos {sql_snippet_idx}")
+                print(f"    DEBUG: SQL context: ...{resolved_sql[max(0,sql_snippet_idx-20):sql_snippet_idx+50]}...")
+            
+            for alt in variations:
+                if alt == key:
+                    continue
+                # Use word boundary to match full parameter name
+                pattern = _re.compile(r'\b' + _re.escape(alt) + r'\b', _re.IGNORECASE)
+                match = pattern.search(resolved_sql)
+                if match:
+                    matched_text = match.group()
+                    print(f"    DEBUG: Pattern '{alt}' matched '{matched_text}' at pos {match.start()}-{match.end()}")
                     resolved_sql = pattern.sub(str(value), resolved_sql)
                     found = True
                     print(f"    Fuzzy match: {key} → {alt}")
-            # Try "Cash" → "Csh"
-            if not found:
-                alt = key.replace("Cash", "Csh")
-                if alt != key:
-                    pattern = _re.compile(_re.escape(alt), _re.IGNORECASE)
-                    if pattern.search(resolved_sql):
-                        resolved_sql = pattern.sub(str(value), resolved_sql)
-                        found = True
-                        print(f"    Fuzzy match: {key} → {alt}")
-            # Try both combined + fix double underscore
-            if not found:
-                alt = key.replace("Trxn", "").replace("Cash", "Csh").replace("__", "_")
-                if alt != key:
-                    pattern = _re.compile(_re.escape(alt), _re.IGNORECASE)
-                    if pattern.search(resolved_sql):
-                        resolved_sql = pattern.sub(str(value), resolved_sql)
-                        found = True
-                        print(f"    Fuzzy match: {key} → {alt}")
+                    break
+            
             if not found:
                 print(f"    WARNING: Could not find '{key}' in SQL")
 
@@ -579,6 +632,15 @@ def _step_execute_resolved_function(state: dict) -> str:
 
     if run_logger:
         run_logger.log_sql(3, "resolved_function", resolved_sql)
+
+    # Save resolved SQL for debugging
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    debug_file = os.path.join(extracted_dir, f"resolved_function_debug_{timestamp}.sql")
+    with open(debug_file, "w", encoding="utf-8") as f:
+        f.write("-- RESOLVED FUNCTION SQL (DEBUG)\n")
+        f.write(f"-- Extracted: {datetime.now()}\n\n")
+        f.write(resolved_sql)
+    print(f"  Saved resolved SQL for debug: {debug_file}")
 
     # Execute resolved SQL in Oracle
     conn = None
@@ -599,62 +661,158 @@ def _step_execute_resolved_function(state: dict) -> str:
                 f.write(f"-- Extracted: {datetime.now()}\n\n")
                 f.write(resolved_sql)
             print(f"\n  Saved resolved function as dataset:\n  {ds_file}")
+            state["resolved_function_sql_file"] = ds_file  # store file path for line number lookup
             return "⚠️ Resolved function executed — no alerts. Proceeding to CTE analysis."
     finally:
         if conn:
             conn.close()
+
+
+def _step_generic_sql_diagnostics(state: dict) -> str:
     """
-    Step 4 (function scenarios, no alerts):
-    Diagnose the resolved function SQL using granular condition analysis.
+    Step 6 (generic path for function scenarios):
+    Uses structural decomposition + condition elimination to diagnose
+    why the resolved function SQL returns 0 rows. No scenario-specific
+    logic — purely SQL-structure based.
+    
+    For CTE-based function SQL (WITH ... AS (...) SELECT ...), we diagnose
+    the CTE body (the first CTE) rather than the full query, because the
+    final SELECT's JOIN conditions are not the real blockers — the CTE body's
+    WHERE conditions are.
     """
-    from sql_diagnostics import run_granular_cte_diagnostics
+    from generic_sql_diagnostics import (
+        localize_and_diagnose,
+        format_localization_report,
+        test_join_data_availability,
+        format_join_report,
+        _find_condition_line_in_sql,
+        OracleExecutor,
+        convert_to_diagnostic_result,
+        _parse_with_ctes,
+    )
     from db_connect import connect_to_oracle
 
     resolved_sql = state.get("resolved_function_sql", "")
     if not resolved_sql:
-        return "No resolved function SQL to diagnose"
+        return "No resolved function SQL available for generic diagnosis"
 
-    metadata = dict(state.get("cte_metadata", {}))
-    metadata["output_dir"] = state.get("output_dir", "")
+    # Read the actual saved file (with header comments) for accurate line number lookup
+    resolved_sql_file = state.get("resolved_function_sql_file")
+    resolved_sql_for_lines = resolved_sql
+    if resolved_sql_file and os.path.exists(resolved_sql_file):
+        with open(resolved_sql_file, "r", encoding="utf-8") as f:
+            resolved_sql_for_lines = f.read()
+
+    metadata = dict(state.get("metadata", {}))
     run_logger = state.get("run_logger")
 
     print(f"\n{'=' * 80}")
-    print(f"  DIAGNOSING RESOLVED FUNCTION SQL")
+    print(f"  GENERIC SQL DIAGNOSTICS — Function Scenario")
     print(f"{'=' * 80}")
 
-    conn = None
+    conn = connect_to_oracle()
+    state["conn"] = conn
     try:
-        conn = connect_to_oracle()
-        results = run_granular_cte_diagnostics(
-            conn,
-            [{"name": "resolved_function", "sql": resolved_sql}],
-            metadata,
-            run_logger=run_logger,
-            dataset_query_raw=resolved_sql
-        )
-
-        state["results"] = results
-        state["diagnostic_results"] = results
-
-        if results:
-            r = results[0]
-            root_cause = (
-                f"CTE '{r['cte_name']}' returns 0 rows. "
-                f"Failure type: {r.get('failure_type', 'unknown').upper()}. "
-                f"{r.get('likely_cause', '')}"
-            )
-            if r.get("failure_condition"):
-                root_cause += f" Condition: {r['failure_condition'][:200]}"
-            if r.get("condition_line_number"):
-                root_cause += f" [Line {r['condition_line_number']}]"
+        executor = OracleExecutor(conn, metadata, state.get("output_dir", ""))
+        
+        # Check if the SQL has CTEs — if so, diagnose the FIRST CTE body
+        # (which contains the actual data filtering, not the final SELECT's JOIN)
+        ctes, final_select = _parse_with_ctes(resolved_sql)
+        
+        if ctes:
+            # Use the first CTE body for diagnosis (e.g., All_Trxn_B)
+            cte_name, cte_body = ctes[0]
+            print(f"\n  Diagnosing CTE body: {cte_name} ({len(cte_body)} chars)")
+            result = localize_and_diagnose(cte_body, executor)
+            diag = convert_to_diagnostic_result(result, resolved_sql_for_lines, cte_name=cte_name)
         else:
-            root_cause = "Diagnosis inconclusive — could not pinpoint root cause"
+            # No CTEs — diagnose the full SQL
+            print(f"\n  No CTEs found — diagnosing full SQL ({len(resolved_sql)} chars)")
+            result = localize_and_diagnose(resolved_sql, executor)
+            diag = convert_to_diagnostic_result(result, resolved_sql_for_lines)
 
-        state["root_cause"] = root_cause
-        return root_cause
+        state["results"] = [diag]
+        state["root_cause"] = diag.get("likely_cause", "Unknown")
+
+        report = format_localization_report(result)
+        if run_logger:
+            run_logger.log(6, report)
+        else:
+            print(report)
+
+        # If no single condition explains zero rows, test JOIN data availability
+        # Also trigger JOIN analysis if the "blocker" is a JOIN-style condition (alias.col = alias.col)
+        if result.get("status") == "LOCALIZED":
+            elim = result.get("elimination", {})
+            blockers = [c for c in elim.get("conditions", []) if c.get("likely_blocker")]
+            
+            # Check if any condition looks like a JOIN (alias.col = alias.col pattern)
+            is_join_condition = False
+            for c in elim.get("conditions", []):
+                cond = c.get("condition", "")
+                if re.search(r'\b\w+\.\w+\s*=\s*\w+\.\w+\b', cond):
+                    is_join_condition = True
+                    break
+            
+            if is_join_condition:
+                print(f"\n  {'=' * 80}")
+                print(f"  Testing JOIN data availability...")
+                print(f"{'=' * 80}")
+                
+                # Determine which SQL to test (CTE body or full SQL)
+                test_sql = cte_body if ctes else resolved_sql
+                
+                join_result = test_join_data_availability(test_sql, executor)
+                join_report = format_join_report(join_result)
+                
+                if run_logger:
+                    run_logger.log(6, join_report)
+                else:
+                    print(join_report)
+                
+                if join_result.get("root_cause"):
+                    rc = join_result["root_cause"]
+                    left_table_short = rc['left_table'].split('.')[-1] if '.' in rc['left_table'] else rc['left_table']
+                    right_table_short = rc['right_table'].split('.')[-1] if '.' in rc['right_table'] else rc['right_table']
+                    root_cause_msg = (
+                        f"JOIN {rc['join_condition']} produces 0 rows — "
+                        f"{left_table_short.upper()} has no transactions matching {right_table_short.upper()} account values"
+                    )
+                    state["root_cause"] = root_cause_msg
+                    diag["likely_cause"] = root_cause_msg
+                    diag["failure_type"] = "join_no_match"
+                    diag["join_analysis"] = join_result
+                    diag["failure_condition"] = rc['join_condition']
+                    
+                    # Find line number of the JOIN condition in the original SQL
+                    join_line = _find_condition_line_in_sql(rc['join_condition'], resolved_sql_for_lines)
+                    diag["condition_line_number"] = join_line
+                    
+        # Build detailed step output for the UI step panel
+        detail_lines = []
+        if diag.get("failure_condition"):
+            detail_lines.append(f"CTE: {diag['cte_name']}")
+            detail_lines.append(f"Failure Type: {diag.get('failure_type', 'unknown').upper()}")
+            detail_lines.append(f"Killer Condition: {diag['failure_condition'][:300]}")
+            if diag.get("condition_line_number"):
+                detail_lines.append(f"Dataset Query Line: {diag['condition_line_number']}")
+            detail_lines.append(f"Likely Cause: {diag['likely_cause']}")
+            if diag.get("rows_after") is not None:
+                detail_lines.append(f"Rows After Elimination: {diag['rows_after']:,}")
+        else:
+            detail_lines.append(state["root_cause"])
+        step_output = "\n".join(detail_lines)
+
+        if run_logger and diag.get("failure_condition"):
+            run_logger.section("ROOT CAUSE SUMMARY")
+            for line in detail_lines:
+                run_logger.log(6, line)
+
+        return step_output
     finally:
         if conn:
             conn.close()
+            logger.info("Oracle connection closed after generic diagnostics")
 
 
 def _step_set_batch_date(state: dict) -> str:
@@ -807,6 +965,10 @@ def _step_sql_diagnostics(state: dict) -> str:
     Step 6: Run granular diagnosis on the failing CTE.
     Identifies the exact condition causing 0 rows.
     """
+    # ── GENERIC PATH for function scenarios ──
+    if state.get("multi_query") and state.get("resolved_function_sql"):
+        return _step_generic_sql_diagnostics(state)
+
     from sql_diagnostics import run_granular_cte_diagnostics, display_granular_results
     from sql_executer import load_sql_file, get_latest_dataset_query_file
 
@@ -902,22 +1064,32 @@ def _step_sql_diagnostics(state: dict) -> str:
 
         state["root_cause"] = root_cause
 
+        # Build detailed step output for the UI step panel
+        detail_lines = []
+        if results:
+            r = results[0]
+            detail_lines.append(f"CTE: {r['cte_name']}")
+            detail_lines.append(f"Failure Type: {r.get('failure_type', 'unknown').upper()}")
+            if r.get("failure_condition"):
+                detail_lines.append(f"Killer Condition: {r['failure_condition']}")
+            if r.get("condition_line_number"):
+                detail_lines.append(f"Dataset Query Line: {r['condition_line_number']}")
+            if r.get("likely_cause"):
+                detail_lines.append(f"Likely Cause: {r['likely_cause']}")
+            if r.get("rows_after") is not None:
+                detail_lines.append(f"Rows After Elimination: {r['rows_after']:,}")
+        else:
+            detail_lines.append(root_cause)
+        step_output = "\n".join(detail_lines)
+
         # Log root cause summary at the END of the log file (last visible line in UI)
         if run_logger and results:
             r = results[0]
             run_logger.section("ROOT CAUSE SUMMARY")
-            run_logger.log(6, f"CTE: {r['cte_name']}")
-            run_logger.log(6, f"Failure Type: {r.get('failure_type', 'unknown').upper()}")
-            if r.get("failure_condition"):
-                run_logger.log(6, f"Killer Condition: {r['failure_condition']}")
-            if r.get("condition_line_number"):
-                run_logger.log(6, f"Dataset Query Line: {r['condition_line_number']}")
-            if r.get("likely_cause"):
-                run_logger.log(6, f"Likely Cause: {r['likely_cause']}")
-            if r.get("rows_after") is not None:
-                run_logger.log(6, f"Rows After Elimination: {r['rows_after']:,}")
+            for line in detail_lines:
+                run_logger.log(6, line)
 
-        return root_cause
+        return step_output
 
     finally:
         # Always drop views and close connection
