@@ -5,35 +5,42 @@ build/
 dist/
 wheels/
 *.egg-info
+
+# Virtual environments
 .venv/
 backend/.venv/
 
 # Secrets — never commit
 .env
-frontend/.env
-frontend/.env.production
-frontend/.env.local
+frontend-next/.env
+frontend-next/.env.production
+frontend-next/.env.local
 
-# App runtime data
-ofsaa_outputs/
+# Backend runtime data
 backend/db/
 backend/logs/
 backend/uploads/
 backend/outputs/
 backend/pdf_reports/
+
+# Frontend runtime data
+frontend-next/.next/
+frontend-next/out/
+
+# Sample data
 data/Sample Scenario logs/
 
 # Stray binaries
 datamap.jar
 
 # Stray root files
-ML-StructuringAvoidReportThreshold_(ML-StructuringAvoidReportThreshold)_AIIN.log
-"OFSAA SCENARIO DEBUGGER.docx"
+*.log
+*.docx
+*.txt
 
 # Node
 node_modules/
-frontend/node_modules/
-frontend/dist/
+frontend-next/node_modules/
 
 # OS
 .DS_Store

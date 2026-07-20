@@ -1,0 +1,51 @@
+import axios from "axios";
+
+const api = axios.create({ baseURL: "/api" });
+
+api.interceptors.request.use((config) => {
+  const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
+  if (token) config.headers.Authorization = `Bearer ${token}`;
+  return config;
+});
+
+export const authAPI = {
+  login: (username, password) =>
+    api.post("/auth/login", new URLSearchParams({ username, password }), {
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    }).then((r) => r.data),
+  getMe: () => api.get("/auth/me").then((r) => r.data),
+  logout: () => localStorage.removeItem("token"),
+};
+
+export const filesAPI = {
+  uploadLog: (file, onProgress) => {
+    const form = new FormData();
+    form.append("file", file);
+    return api.post("/upload", form, {
+      headers: { "Content-Type": "multipart/form-data" },
+      onUploadProgress: (e) => onProgress?.(Math.round((e.loaded * 100) / e.total)),
+    }).then((r) => r.data);
+  },
+};
+
+export const jobsAPI = {
+  runPipeline: (filePath, force = false) =>
+    api.post(`/jobs/run?file_path=${encodeURIComponent(filePath)}&force=${force}`).then((r) => r.data),
+  listJobs: () => api.get("/jobs").then((r) => r.data),
+  getJob: (jobId) => api.get(`/jobs/${jobId}`).then((r) => r.data),
+  rerunJob: (jobId, force = false) =>
+    api.post(`/jobs/${jobId}/rerun?force=${force}`).then((r) => r.data),
+  batchRun: (filePaths) =>
+    api.post("/jobs/batch", { file_paths: filePaths }).then((r) => r.data),
+};
+
+export const adminAPI = {
+  listUsers: () => api.get("/admin/users").then((r) => r.data),
+  createUser: (data) => api.post("/admin/users", data).then((r) => r.data),
+  deactivateUser: (id) => api.delete(`/admin/users/${id}`).then((r) => r.data),
+  getAuditLog: (limit = 100) => api.get(`/admin/audit?limit=${limit}`).then((r) => r.data),
+};
+
+export function getErrorMessage(err) {
+  return err?.response?.data?.detail || err?.message || "An unexpected error occurred";
+}

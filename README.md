@@ -17,7 +17,7 @@ This tool automates that investigation in six steps:
 | 3 | **SQL Executer** | Runs the full scenario SQL against Oracle — if alerts are found, stops here (scenario is working) |
 | 4 | **CTE Parser** | Splits the scenario SQL into individual CTEs and saves each as a separate `.sql` file |
 | 5 | **CTE Executer** | Creates Oracle views for each CTE in order, validates row counts — stops at the first empty CTE |
-| 6 | **SQL Diagnostics** | Runs granular diagnosis on the failing CTE — identifies the exact JOIN condition, filter, or date range causing zero rows |
+| 6 | **SQL Diagnostics** | Runs granular diagnosis on ALL failing CTEs — identifies the exact JOIN condition, filter, or date range causing zero rows |
 
 Results are streamed live to the browser via WebSocket as each step completes.
 
@@ -27,7 +27,7 @@ Results are streamed live to the browser via WebSocket as each step completes.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│                        Browser (React)                       │
+│                    Browser (Next.js / React)                  │
 │  Login → Upload .log file → Run → Live progress → Results   │
 └───────────────────┬──────────────────────────────────────────┘
                     │  HTTP + WebSocket
@@ -62,8 +62,9 @@ Results are streamed live to the browser via WebSocket as each step completes.
 
 | Layer | Technology |
 |-------|-----------|
-| Frontend | React 18, Vite, React Router |
-| Backend | FastAPI, Uvicorn, Python 3.13 |
+| Frontend (new) | Next.js 14 App Router, React 18, CSS Variables |
+| Frontend (old) | React 18, Vite, React Router |
+| Backend (new) | FastAPI, Uvicorn, Python 3.13 — modular `app/` structure |
 | Database | SQLite (job tracking, users, audit log) |
 | External DB | Oracle (via `oracledb`) |
 | SSH | Paramiko (set batch date on OFSAA server) |
@@ -78,50 +79,93 @@ Results are streamed live to the browser via WebSocket as each step completes.
 
 ```
 scenario-debugger/
-├── backend/
-│   ├── main.py          # FastAPI app — all API routes
-│   ├── pipeline.py      # 6-step pipeline orchestrator
-│   ├── jobs.py          # SQLite DB schema + job/user/audit helpers
-│   ├── auth.py          # JWT creation, bcrypt verification, user auth
-│   ├── config.py        # All settings (loaded from .env)
-│   └── users.py         # User management helpers
+├── backend/app/              # New modular FastAPI structure
+│   ├── main.py               # App factory (<50 lines)
+│   ├── config.py             # Settings loader
+│   ├── models/               # Pydantic schemas
+│   │   ├── auth.py
+│   │   ├── job.py
+│   │   ├── upload.py
+│   │   ├── batch.py
+│   │   └── admin.py
+│   ├── routers/              # API routes
+│   │   ├── health.py
+│   │   ├── auth.py
+│   │   ├── upload.py
+│   │   ├── jobs.py
+│   │   ├── websocket.py
+│   │   └── admin/
+│   │       ├── users.py
+│   │       └── audit.py
+│   ├── services/             # Business logic
+│   │   ├── auth_service.py
+│   │   ├── job_service.py
+│   │   ├── user_service.py
+│   │   └── audit_service.py
+│   ├── database/             # SQLite layer
+│   │   ├── connection.py
+│   │   ├── schema.py
+│   │   ├── user_repo.py
+│   │   ├── job_repo.py
+│   │   └── audit_repo.py
+│   ├── pipeline/             # Pipeline scripts
+│   │   ├── orchestrator.py
+│   │   ├── log_reader.py
+│   │   ├── set_batch_date.py
+│   │   ├── sql_executer.py
+│   │   ├── cte_parser.py
+│   │   ├── cte_executer.py
+│   │   ├── sql_diagnostics.py
+│   │   ├── generic_sql_diagnostics.py
+│   │   ├── db_connect.py
+│   │   ├── path_manager.py
+│   │   ├── run_logger.py
+│   │   └── scenario_config.py
+│   └── websocket/
+│       └── manager.py
 │
-├── pipeline/            # The 6 diagnostic scripts
-│   ├── log_reader.py    # Step 1: parse OFSAA log
-│   ├── set_batch_date.py # Step 2: SSH + set date
-│   ├── sql_executer.py  # Step 3: run full SQL
-│   ├── cte_parser.py    # Step 4: split SQL into CTEs
-│   ├── cte_executer.py  # Step 5: run each CTE, find empty one
-│   ├── sql_diagnostics.py # Step 6: diagnose failing CTE
-│   ├── db_connect.py    # Oracle connection helper
-│   └── path_manager.py  # Output directory management
+├── frontend-next/            # New Next.js frontend
+│   ├── app/                  # App Router pages
+│   │   ├── layout.jsx
+│   │   ├── page.jsx
+│   │   ├── globals.css
+│   │   ├── login/page.jsx
+│   │   ├── dashboard/
+│   │   │   ├── page.jsx
+│   │   │   ├── upload-zone.jsx
+│   │   │   └── job-history.jsx
+│   │   ├── jobs/[jobId]/
+│   │   │   ├── page.jsx
+│   │   │   ├── pipeline-tracker.jsx
+│   │   │   ├── cte-waterfall.jsx
+│   │   │   └── root-cause-card.jsx
+│   │   ├── batch/page.jsx
+│   │   └── admin/
+│   │       ├── users/page.jsx
+│   │       └── audit/page.jsx
+│   ├── components/
+│   │   ├── layout/navbar.jsx
+│   │   └── auth/
+│   ├── hooks/
+│   │   ├── use-auth.js
+│   │   └── use-websocket.js
+│   └── lib/api-client.js
 │
-├── frontend/
-│   └── src/
-│       ├── App.jsx          # Routing + auth context
-│       ├── api.js           # All API calls to backend
-│       └── pages/
-│           ├── Login.jsx        # Login page
-│           ├── Dashboard.jsx    # Upload + run + job history
-│           ├── Results.jsx      # Live pipeline progress + results
-│           └── BatchResults.jsx # Batch run tracking
+├── old/                      # Legacy code (preserved)
+│   ├── main.py, config.py, jobs.py, auth.py, orchestrator.py
+│   ├── pipeline/
+│   └── frontend/             # Old React + Vite app
 │
-├── nginx/
-│   └── scenario-debugger.conf  # Nginx reverse proxy config
-├── systemd/
-│   └── scenario-debugger.service # systemd service file
-├── db/                   # SQLite database (auto-created)
-├── uploads/              # Uploaded log files (auto-created)
-├── outputs/              # Pipeline outputs per scenario (auto-created)
-├── logs/                 # App logs (auto-created)
-├── pyproject.toml        # Python dependencies
-├── start.ps1             # Windows dev launcher
-└── README_DEPLOY.md      # Linux production deployment guide
+├── deploy/
+│   ├── nginx/
+│   └── systemd/
+├── pyproject.toml
+└── README_DEPLOY.md
 ```
 
 ---
 
-## Quick Start (Windows — Development)
+## Quick Start
 
 ### Prerequisites
 
@@ -157,32 +201,47 @@ SERVER_PASSWORD=your_ssh_password
 MANTAS_BATCH_PATH=/path/to/mantas/batch/on/server
 ```
 
-### 2. Install backend dependencies
+### 2. Install dependencies
 
 ```bash
+# Backend
 cd backend
 uv sync
-```
 
-### 3. Install frontend dependencies
-
-```bash
-cd frontend
+# Frontend (new Next.js)
+cd frontend-next
 npm install
 ```
 
-### 4. Start both servers
+### 3. Start both servers
+
+**Option A — New structure (recommended):**
 
 ```powershell
-# From the project root:
+# Terminal 1: Backend
+cd backend
+uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+
+# Terminal 2: Frontend
+cd frontend-next
+npm run dev
+```
+
+**Option B — Legacy (still works):**
+
+```powershell
+# From project root:
 .\start.ps1
 ```
 
-This opens two terminal windows:
-- **Backend**: `http://127.0.0.1:8000` (FastAPI + Uvicorn, hot-reload enabled)
-- **Frontend**: `http://localhost:5173` (Vite dev server)
+| Server | URL | Command |
+|--------|-----|---------|
+| Backend (new) | `http://127.0.0.1:8000` | `uv run uvicorn app.main:app --reload` |
+| Backend (old) | `http://127.0.0.1:8000` | `uv run uvicorn main:app --reload` |
+| Frontend (new) | `http://localhost:3000` | `cd frontend-next && npm run dev` |
+| Frontend (old) | `http://localhost:5173` | `cd ../old/frontend && npm run dev` |
 
-Open `http://localhost:5173` in your browser.
+Open `http://localhost:3000` (new) or `http://localhost:5173` (old) in your browser.
 
 **Default login:** `admin` / `changeme123` — change this immediately.
 
@@ -196,7 +255,7 @@ Open `http://localhost:5173` in your browser.
 4. **Watch live progress** — each of the 6 steps updates in real time via WebSocket
 5. **Read the diagnosis** — when the pipeline completes, the root cause is displayed:
    - If alerts were generated: confirms the scenario is working
-   - If no alerts: shows which CTE returned zero rows and exactly why (missing data, date mismatch, threshold condition, etc.)
+   - If no alerts: shows which CTEs returned zero rows and exactly why (missing data, date mismatch, threshold condition, etc.)
 6. **Batch runs** — upload multiple log files and run all scenarios sequentially via the batch endpoint
 
 ---
@@ -240,7 +299,7 @@ The `/api/ws/{job_id}` stream sends JSON messages with an `event` field:
 
 ## Configuration Reference
 
-All settings live in `backend/.env`. The backend reads them via `config.py`.
+All settings live in `backend/.env`. The backend reads them via `app/config.py`.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -367,5 +426,3 @@ curl http://127.0.0.1:8000/api/health
 ---
 
 ## License
-
-Internal tool — not for public distribution.
