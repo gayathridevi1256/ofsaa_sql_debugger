@@ -671,15 +671,104 @@ def _step_execute_resolved_function(state: dict) -> str:
 def _step_generic_sql_diagnostics(state: dict) -> str:
     """
     Step 6 (generic path for function scenarios):
-    Uses structural decomposition + condition elimination to diagnose
-    why the resolved function SQL returns 0 rows. No scenario-specific
-    logic — purely SQL-structure based.
-    
-    For CTE-based function SQL (WITH ... AS (...) SELECT ...), we diagnose
-    the CTE body (the first CTE) rather than the full query, because the
-    final SELECT's JOIN conditions are not the real blockers — the CTE body's
-    WHERE conditions are.
+    Diagnoses ALL empty CTEs found during CTE execution.
+    If no empty CTEs are available, falls back to structural decomposition
+    of the resolved function SQL.
     """
+    from db_connect import connect_to_oracle
+
+    empty_ctes = state.get("empty_ctes", [])
+    run_logger = state.get("run_logger")
+    metadata = dict(state.get("metadata", {}))
+    metadata["output_dir"] = state.get("output_dir", "")
+
+    # ── PRIMARY PATH: Diagnose ALL empty CTEs from CTE executer ──
+    if empty_ctes:
+        from sql_diagnostics import run_granular_cte_diagnostics, display_granular_results
+        from sql_executer import load_sql_file, get_latest_dataset_query_file
+
+        cte_names = [c["name"] for c in empty_ctes]
+        print(f"\n{'=' * 80}")
+        print(f"  GENERIC SQL DIAGNOSTICS — Diagnosing {len(empty_ctes)} empty CTEs")
+        print(f"  CTEs: {', '.join(cte_names)}")
+        print(f"{'=' * 80}")
+
+        if run_logger:
+            run_logger.log(6, f"Diagnosing {len(empty_ctes)} empty CTEs: {', '.join(cte_names)}")
+
+        conn = connect_to_oracle()
+        state["conn"] = conn
+
+        # Load dataset query for line number lookup
+        dataset_query_sql = None
+        dataset_query_raw = None
+        try:
+            dataset_file = get_latest_dataset_query_file()
+            dataset_query_sql = load_sql_file(dataset_file)
+            with open(dataset_file, "r", encoding="utf-8") as f:
+                dataset_query_raw = f.read()
+        except Exception as e:
+            logger.warning("Could not load dataset query for line number lookup: %s", e)
+
+        try:
+            results = run_granular_cte_diagnostics(
+                conn, empty_ctes, metadata, run_logger=run_logger,
+                dataset_query_sql=dataset_query_sql,
+                dataset_query_raw=dataset_query_raw
+            )
+
+            state["results"] = results
+
+            # Build root cause summary for ALL CTEs
+            root_cause_lines = []
+            for r in results:
+                line = (
+                    f"CTE '{r['cte_name']}' returns 0 rows. "
+                    f"Failure type: {r.get('failure_type', 'unknown').upper()}. "
+                    f"{r.get('likely_cause', '')}"
+                )
+                if r.get("failure_condition"):
+                    line += f" Condition: {r['failure_condition'][:200]}"
+                if r.get("condition_line_number"):
+                    line += f" [Dataset query line {r['condition_line_number']}]"
+                root_cause_lines.append(line)
+            root_cause = "\n".join(root_cause_lines) if root_cause_lines else "Diagnosis inconclusive"
+            state["root_cause"] = root_cause
+
+            # Build detailed step output
+            detail_lines = []
+            if len(results) > 1:
+                detail_lines.append(f"Diagnosed {len(results)} empty CTEs:")
+                detail_lines.append("")
+            for r in results:
+                if len(results) > 1:
+                    detail_lines.append(f"--- CTE: {r['cte_name']} ---")
+                detail_lines.append(f"CTE: {r['cte_name']}")
+                detail_lines.append(f"Failure Type: {r.get('failure_type', 'unknown').upper()}")
+                if r.get("failure_condition"):
+                    detail_lines.append(f"Killer Condition: {r['failure_condition']}")
+                if r.get("condition_line_number"):
+                    detail_lines.append(f"Dataset Query Line: {r['condition_line_number']}")
+                if r.get("likely_cause"):
+                    detail_lines.append(f"Likely Cause: {r['likely_cause']}")
+                if r.get("rows_after") is not None:
+                    detail_lines.append(f"Rows After Elimination: {r['rows_after']:,}")
+                detail_lines.append("")
+
+            step_output = "\n".join(detail_lines)
+
+            if run_logger:
+                run_logger.section("ROOT CAUSE SUMMARY")
+                for line in detail_lines:
+                    run_logger.log(6, line)
+
+            return step_output
+        finally:
+            if conn:
+                conn.close()
+                logger.info("Oracle connection closed after generic diagnostics")
+
+    # ── FALLBACK PATH: Structural decomposition of resolved SQL ──
     from generic_sql_diagnostics import (
         localize_and_diagnose,
         format_localization_report,
@@ -690,24 +779,19 @@ def _step_generic_sql_diagnostics(state: dict) -> str:
         convert_to_diagnostic_result,
         _parse_with_ctes,
     )
-    from db_connect import connect_to_oracle
 
     resolved_sql = state.get("resolved_function_sql", "")
     if not resolved_sql:
         return "No resolved function SQL available for generic diagnosis"
 
-    # Read the actual saved file (with header comments) for accurate line number lookup
     resolved_sql_file = state.get("resolved_function_sql_file")
     resolved_sql_for_lines = resolved_sql
     if resolved_sql_file and os.path.exists(resolved_sql_file):
         with open(resolved_sql_file, "r", encoding="utf-8") as f:
             resolved_sql_for_lines = f.read()
 
-    metadata = dict(state.get("metadata", {}))
-    run_logger = state.get("run_logger")
-
     print(f"\n{'=' * 80}")
-    print(f"  GENERIC SQL DIAGNOSTICS — Function Scenario")
+    print(f"  GENERIC SQL DIAGNOSTICS — Function Scenario (fallback)")
     print(f"{'=' * 80}")
 
     conn = connect_to_oracle()
@@ -715,18 +799,14 @@ def _step_generic_sql_diagnostics(state: dict) -> str:
     try:
         executor = OracleExecutor(conn, metadata, state.get("output_dir", ""))
         
-        # Check if the SQL has CTEs — if so, diagnose the FIRST CTE body
-        # (which contains the actual data filtering, not the final SELECT's JOIN)
         ctes, final_select = _parse_with_ctes(resolved_sql)
         
         if ctes:
-            # Use the first CTE body for diagnosis (e.g., All_Trxn_B)
             cte_name, cte_body = ctes[0]
             print(f"\n  Diagnosing CTE body: {cte_name} ({len(cte_body)} chars)")
             result = localize_and_diagnose(cte_body, executor)
             diag = convert_to_diagnostic_result(result, resolved_sql_for_lines, cte_name=cte_name)
         else:
-            # No CTEs — diagnose the full SQL
             print(f"\n  No CTEs found — diagnosing full SQL ({len(resolved_sql)} chars)")
             result = localize_and_diagnose(resolved_sql, executor)
             diag = convert_to_diagnostic_result(result, resolved_sql_for_lines)
@@ -740,13 +820,10 @@ def _step_generic_sql_diagnostics(state: dict) -> str:
         else:
             print(report)
 
-        # If no single condition explains zero rows, test JOIN data availability
-        # Also trigger JOIN analysis if the "blocker" is a JOIN-style condition (alias.col = alias.col)
         if result.get("status") == "LOCALIZED":
             elim = result.get("elimination", {})
             blockers = [c for c in elim.get("conditions", []) if c.get("likely_blocker")]
             
-            # Check if any condition looks like a JOIN (alias.col = alias.col pattern)
             is_join_condition = False
             for c in elim.get("conditions", []):
                 cond = c.get("condition", "")
@@ -759,7 +836,6 @@ def _step_generic_sql_diagnostics(state: dict) -> str:
                 print(f"  Testing JOIN data availability...")
                 print(f"{'=' * 80}")
                 
-                # Determine which SQL to test (CTE body or full SQL)
                 test_sql = cte_body if ctes else resolved_sql
                 
                 join_result = test_join_data_availability(test_sql, executor)
@@ -784,11 +860,9 @@ def _step_generic_sql_diagnostics(state: dict) -> str:
                     diag["join_analysis"] = join_result
                     diag["failure_condition"] = rc['join_condition']
                     
-                    # Find line number of the JOIN condition in the original SQL
                     join_line = _find_condition_line_in_sql(rc['join_condition'], resolved_sql_for_lines)
                     diag["condition_line_number"] = join_line
                     
-        # Build detailed step output for the UI step panel
         detail_lines = []
         if diag.get("failure_condition"):
             detail_lines.append(f"CTE: {diag['cte_name']}")
@@ -962,8 +1036,8 @@ def _step_cte_executer(state: dict) -> str:
 
 def _step_sql_diagnostics(state: dict) -> str:
     """
-    Step 6: Run granular diagnosis on the failing CTE.
-    Identifies the exact condition causing 0 rows.
+    Step 6: Run granular diagnosis on ALL failing CTEs.
+    Identifies the exact condition causing 0 rows for each empty CTE.
     """
     # ── GENERIC PATH for function scenarios ──
     if state.get("multi_query") and state.get("resolved_function_sql"):
@@ -972,6 +1046,7 @@ def _step_sql_diagnostics(state: dict) -> str:
     from sql_diagnostics import run_granular_cte_diagnostics, display_granular_results
     from sql_executer import load_sql_file, get_latest_dataset_query_file
 
+    empty_ctes    = state.get("empty_ctes", [])
     failed_cte    = state.get("failed_cte")
     conn          = state.get("conn")
     metadata      = dict(state.get("cte_metadata", {}))   # copy — don't mutate shared state
@@ -1012,34 +1087,43 @@ def _step_sql_diagnostics(state: dict) -> str:
                          and not f.startswith("000_")]
             has_ctes = len(cte_files) > 0
 
-        if not failed_cte:
-            if not has_ctes:
-                # No CTEs — treat entire dataset query as final_query
-                if dataset_query_sql:
-                    if run_logger:
-                        run_logger.log(6, "No CTEs found — treating entire dataset query as final_query")
-                    failed_cte = {"name": "final_query", "sql": dataset_query_sql}
-                    if run_logger:
-                        run_logger.log(6, f"Dataset query loaded for diagnosis ({len(dataset_query_sql)} chars)")
-                else:
-                    return "No CTEs found and dataset query not available for diagnosis"
-            else:
-                # All CTEs passed but no alerts — diagnose final query
-                final_query = state.get("final_query", "")
-                if final_query:
-                    failed_cte = {"name": "final_query", "sql": final_query}
-                else:
-                    # Fallback: use dataset query if no final_query extracted
+        # Use ALL empty CTEs if available, otherwise fall back to single failed_cte
+        ctes_to_diagnose = empty_ctes if empty_ctes else None
+
+        if not ctes_to_diagnose:
+            if not failed_cte:
+                if not has_ctes:
+                    # No CTEs — treat entire dataset query as final_query
                     if dataset_query_sql:
+                        if run_logger:
+                            run_logger.log(6, "No CTEs found — treating entire dataset query as final_query")
                         failed_cte = {"name": "final_query", "sql": dataset_query_sql}
                         if run_logger:
-                            run_logger.log(6, "No final_query extracted — using dataset query directly")
+                            run_logger.log(6, f"Dataset query loaded for diagnosis ({len(dataset_query_sql)} chars)")
                     else:
-                        return "No final query or dataset query available for diagnosis"
+                        return "No CTEs found and dataset query not available for diagnosis"
+                else:
+                    # All CTEs passed but no alerts — diagnose final query
+                    final_query = state.get("final_query", "")
+                    if final_query:
+                        failed_cte = {"name": "final_query", "sql": final_query}
+                    else:
+                        # Fallback: use dataset query if no final_query extracted
+                        if dataset_query_sql:
+                            failed_cte = {"name": "final_query", "sql": dataset_query_sql}
+                            if run_logger:
+                                run_logger.log(6, "No final_query extracted — using dataset query directly")
+                        else:
+                            return "No final query or dataset query available for diagnosis"
+            ctes_to_diagnose = [failed_cte]
 
-        # Run diagnosis on the single failing CTE
+        if run_logger and len(ctes_to_diagnose) > 1:
+            cte_names = [c["name"] for c in ctes_to_diagnose]
+            run_logger.log(6, f"Diagnosing {len(ctes_to_diagnose)} empty CTEs: {', '.join(cte_names)}")
+
+        # Run diagnosis on ALL failing CTEs
         results = run_granular_cte_diagnostics(
-            conn, [failed_cte], metadata, run_logger=run_logger,
+            conn, ctes_to_diagnose, metadata, run_logger=run_logger,
             dataset_query_sql=dataset_query_sql,
             dataset_query_raw=dataset_query_raw
         )
@@ -1047,44 +1131,49 @@ def _step_sql_diagnostics(state: dict) -> str:
         # Store results in state
         state["results"] = results
 
-        # Build root cause summary
-        if results:
-            r          = results[0]
-            root_cause = (
+        # Build root cause summary for ALL CTEs
+        root_cause_lines = []
+        for r in results:
+            line = (
                 f"CTE '{r['cte_name']}' returns 0 rows. "
                 f"Failure type: {r.get('failure_type', 'unknown').upper()}. "
                 f"{r.get('likely_cause', '')}"
             )
             if r.get("failure_condition"):
-                root_cause += f" Condition: {r['failure_condition'][:200]}"
+                line += f" Condition: {r['failure_condition'][:200]}"
             if r.get("condition_line_number"):
-                root_cause += f" [Dataset query line {r['condition_line_number']}]"
-        else:
-            root_cause = "Diagnosis inconclusive — could not pinpoint root cause"
+                line += f" [Dataset query line {r['condition_line_number']}]"
+            root_cause_lines.append(line)
+        root_cause = "\n".join(root_cause_lines) if root_cause_lines else "Diagnosis inconclusive — could not pinpoint root cause"
 
         state["root_cause"] = root_cause
 
-        # Build detailed step output for the UI step panel
+        # Build detailed step output for the UI step panel — ALL CTEs
         detail_lines = []
         if results:
-            r = results[0]
-            detail_lines.append(f"CTE: {r['cte_name']}")
-            detail_lines.append(f"Failure Type: {r.get('failure_type', 'unknown').upper()}")
-            if r.get("failure_condition"):
-                detail_lines.append(f"Killer Condition: {r['failure_condition']}")
-            if r.get("condition_line_number"):
-                detail_lines.append(f"Dataset Query Line: {r['condition_line_number']}")
-            if r.get("likely_cause"):
-                detail_lines.append(f"Likely Cause: {r['likely_cause']}")
-            if r.get("rows_after") is not None:
-                detail_lines.append(f"Rows After Elimination: {r['rows_after']:,}")
+            if len(results) > 1:
+                detail_lines.append(f"Diagnosed {len(results)} empty CTEs:")
+                detail_lines.append("")
+            for r in results:
+                if len(results) > 1:
+                    detail_lines.append(f"--- CTE: {r['cte_name']} ---")
+                detail_lines.append(f"CTE: {r['cte_name']}")
+                detail_lines.append(f"Failure Type: {r.get('failure_type', 'unknown').upper()}")
+                if r.get("failure_condition"):
+                    detail_lines.append(f"Killer Condition: {r['failure_condition']}")
+                if r.get("condition_line_number"):
+                    detail_lines.append(f"Dataset Query Line: {r['condition_line_number']}")
+                if r.get("likely_cause"):
+                    detail_lines.append(f"Likely Cause: {r['likely_cause']}")
+                if r.get("rows_after") is not None:
+                    detail_lines.append(f"Rows After Elimination: {r['rows_after']:,}")
+                detail_lines.append("")
         else:
             detail_lines.append(root_cause)
         step_output = "\n".join(detail_lines)
 
         # Log root cause summary at the END of the log file (last visible line in UI)
         if run_logger and results:
-            r = results[0]
             run_logger.section("ROOT CAUSE SUMMARY")
             for line in detail_lines:
                 run_logger.log(6, line)
