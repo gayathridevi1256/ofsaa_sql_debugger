@@ -1,4 +1,4 @@
-# How the OFSAA Scenario Debugger Works
+# OFSAA Scenario Debugger — How It Works
 
 ## Problem Statement
 
@@ -10,18 +10,21 @@ This tool **automates that investigation** end-to-end by re-executing the scenar
 
 ## Two Scenario Types
 
-The system handles two fundamentally different types of OFSAA scenarios, each with its own pipeline flow:
+| Type | Description | Count | Detection |
+|------|-------------|-------|-----------|
+| **Non-Function** | SQL query with WITH clause (CTEs) | 160 | Scenario ID does NOT match function patterns |
+| **Function** | PL/SQL function with parameter placeholders | 13 | Scenario ID matches `FUNCTION_SCENARIO_IDS` |
 
-| Type | Description | Detection |
-|------|-------------|-----------|
-| **Standard (non-function)** | SQL query with WITH clause (CTEs) | Scenario ID does NOT match function patterns |
-| **Function** | PL/SQL function with `@param` placeholders that must be resolved | Scenario ID matches patterns like `F_*` |
+### Function Scenario IDs
 
-The system detects the type automatically in **Step 1 (Log Reader)** via `scenario_config.py` and branches accordingly.
+| Category | IDs | Pattern |
+|----------|-----|---------|
+| Functions (12) | `117350046`, `117350005`, `114000065`, `114000071`, `118860034`, `118860035`, `118725006`, `118860031`, `116000046`, `118860028`, `118860029`, `118860030` | `@MINER@.F_*` |
+| Pipeline (1) | `116000065` | `@MINER@.ANOMATMEXCESS_PIPELINE` |
 
 ---
 
-## Standard (Non-Function) Scenario Flow
+## Unified Pipeline Flow — Both Scenario Types
 
 ```
 User uploads .log file
@@ -31,279 +34,104 @@ User uploads .log file
 │ STEP 1: Log Reader                                                  │
 │ • Read .log file                                                    │
 │ • Extract metadata: scenario name, business date, threshold set ID  │
-│ • Extract embedded SQL query                                        │
-│ • Detect scenario type → STANDARD                                    │
-│ • Save extracted query as outputs/<Name>/extracted_queries/         │
+│ • Extract SCNRO_ID                                                  │
+│ • Detect scenario type via scenario_config.py                       │
 └────────────────────────────────┬────────────────────────────────────┘
                                  │
-                                 ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│ STEP 2: Set Batch Date                                              │
-│ • SSH into OFSAA server (Paramiko)                                  │
-│ • Update MANTAS_BATCH_PARAMETER table with business date from log   │
-│ • Ensures re-execution uses same date context as original run       │
-└────────────────────────────────┬────────────────────────────────────┘
-                                 │
-                                 ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│ STEP 3: SQL Executer                                                │
-│ • Connect to Oracle with credentials from .env                       │
-│ • Load full scenario SQL from extracted_queries/                    │
-│ • Execute the SQL                                                   │
-│ • Check if any rows (alerts) are returned                           │
-│                                                                    │
-│   ┌─ Alerts found? ──► ✅ Pipeline stops — scenario is working     │
-│   │                                                                │
-│   └─ No alerts ──────► Continue to CTE analysis                    │
-└────────────────────────────────┬────────────────────────────────────┘
-                                 │  (no alerts)
-                                 ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│ STEP 4: CTE Parser                                                  │
-│ • Use sqlglot to decompose scenario SQL                             │
-│ • Split into individual CTEs + final SELECT query                   │
-│ • Save each as separate .sql file:                                  │
-│                                                                    │
-│   parsed_ctes/                                                      │
-│   ├── cte_01_data.sql                                               │
-│   ├── cte_02_filtered.sql                                           │
-│   ├── cte_03_aggregated.sql                                         │
-│   └── final_query.sql                                               │
-└────────────────────────────────┬────────────────────────────────────┘
-                                 │
-                                 ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│ STEP 5: CTE Executer                                                │
-│ • Connect to Oracle                                                  │
-│ • For each CTE (in definition order):                                │
-│     1. Create temporary Oracle view                                  │
-│     2. Count rows returned                                           │
-│     3. Record result                                                 │
-│ • Execute final query, record count                                  │
-│ • Identify ALL empty CTEs (continues past the first)                 │
-│                                                                    │
-│   ┌─ All CTEs have rows? ──► Diagnose final query                   │
-│   │                                                                │
-│   └─ Empty CTE found ──► Diagnose the failing CTE                   │
-└────────────────────────────────┬────────────────────────────────────┘
-                                 │
-                                 ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│ STEP 6: SQL Diagnostics (2888 lines — the core engine)              │
-│                                                                     │
-│ Runs granular condition analysis on the failing CTE or final query: │
-│                                                                     │
-│ 1. JOIN Analysis:                                                   │
-│    Replace each JOIN condition with 1=1 → test if rows appear       │
-│                                                                     │
-│ 2. WHERE Filter Analysis:                                           │
-│    Comment out each WHERE condition → test if rows appear           │
-│                                                                     │
-│ 3. Date Range Analysis:                                             │
-│    Check if date filters exclude all data (common: format mismatch) │
-│                                                                     │
-│ 4. Threshold Condition Analysis:                                    │
-│    Check if threshold params are too high/low → filter out all      │
-│                                                                     │
-│ 5. Missing Data Detection:                                          │
-│    Verify source tables contain data for the given date range       │
-│                                                                     │
-│ Each condition is tested IN ISOLATION — remove one at a time        │
-│ while keeping everything else intact.                               │
-│                                                                     │
-│ Output: root cause report showing:                                  │
-│ • Which CTE failed                                                  │
-│ • The exact condition causing zero rows                             │
-│ • Line number in original SQL                                       │
-│ • Likely cause description                                          │
-│ • Row counts before/after killer condition                          │
-└────────────────────────────────┬────────────────────────────────────┘
-                                 │
-                                 ▼
-                    📋 Results displayed in browser UI
+                    ┌────────────┴────────────┐
+                    │                         │
+                    ▼                         ▼
+┌──────────────────────────────┐  ┌──────────────────────────────────┐
+│ NON-FUNCTION (160 scenarios) │  │ FUNCTION (13 scenarios)          │
+├──────────────────────────────┤  ├──────────────────────────────────┤
+│ STEP 3: SQL Executer         │  │ STEP 3: Resolve & Execute        │
+│ • Load dataset SQL           │  │ • Load F_*.sql + params JSON     │
+│ • Execute directly           │  │ • Extract SQL between IS/BEGIN   │
+│ • Check for alerts           │  │ • Normalize JSON keys → match    │
+│                              │  │   SQL params & replace            │
+│                              │  │ • Execute resolved SQL           │
+│                              │  │ • Check for alerts               │
+└──────────────┬───────────────┘  └───────────────┬──────────────────┘
+               │                                  │
+     ┌─────────┴─────────┐              ┌─────────┴─────────┐
+     │                   │              │                   │
+     ▼                   ▼              ▼                   ▼
+  ✅ Alerts          ❌ No alerts    ✅ Alerts          ❌ No alerts
+  STOP               continue       STOP               continue
+                         │                                  │
+                         └──────────────┬───────────────────┘
+                                        │
+                                        ▼
+                         ┌──────────────────────────────────┐
+                         │ STEP 4: CTE Parser               │
+                         │ • Split SQL into individual CTEs │
+                         │ • Save each as .sql file         │
+                         └────────────────┬─────────────────┘
+                                          │
+                                          ▼
+                         ┌──────────────────────────────────┐
+                         │ STEP 5: CTE Executer             │
+                         │ • Create temporary Oracle views  │
+                         │ • Count rows per CTE             │
+                         │ • Identify ALL empty CTEs        │
+                         └────────────────┬─────────────────┘
+                                          │
+                                          ▼
+                         ┌──────────────────────────────────┐
+                         │ STEP 6: SQL Diagnostics          │
+                         │ • JOIN analysis                  │
+                         │ • WHERE analysis                 │
+                         │ • HAVING analysis                │
+                         │ • Date analysis                  │
+                         │ • Threshold check                │
+                         │ • Data check                     │
+                         └────────────────┬─────────────────┘
+                                          │
+                                          ▼
+                         ┌──────────────────────────────────┐
+                         │ 📋 Root cause + condition        │
+                         │ + line number + row counts       │
+                         └────────────────┬─────────────────┘
+                                          │
+                                          ▼
+                         📋 Results displayed in browser UI
 ```
 
 ---
 
-## Function Scenario Flow
+## Step 3 Detail: Function Parameter Resolution
 
-Function scenarios contain a PL/SQL function body with parameter placeholders (e.g., `@p_cash_threshold`). These must be **resolved** before execution.
+**The Problem:** JSON keys don't match SQL param names.
 
-```
-User uploads .log file
-        │
-        ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│ STEP 1: Log Reader                                                  │
-│ • Read .log file                                                    │
-│ • Extract metadata: scenario name, business date, threshold set ID  │
-│ • Extract function SQL + parameter definitions from log             │
-│ • Detect scenario type → FUNCTION                                    │
-│ • Save function body as F_*.sql, parameters as parameters_*.json    │
-└────────────────────────────────┬────────────────────────────────────┘
-                                 │
-                                 ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│ STEP 2: Set Batch Date                                              │
-│ • Same as standard flow — SSH + set business date                    │
-└────────────────────────────────┬────────────────────────────────────┘
-                                 │
-                                 ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│ STEP 3: Resolve & Execute Function SQL                              │
-│ • Load F_*.sql function body                                        │
-│ • Load parameters_*.json extracted from log                         │
-│ • Extract SQL portion between IS and BEGIN keywords                 │
-│ • Resolve @param placeholders with values from JSON                 │
-│                                                                     │
-│   Parameter Resolution Strategy:                                    │
-│   ┌────────────────────────────────────────────────────────┐       │
-│   │ 1. Direct match: @p_CashThreshold → 50000              │       │
-│   │ 2. Fuzzy: try removing "Trxn", fix "__" → ""           │       │
-│   │ 3. Fuzzy: try "Cash" → "Csh" variations               │       │
-│   │ 4. Fuzzy: combine both + fix double underscore         │       │
-│   └────────────────────────────────────────────────────────┘       │
-│                                                                     │
-│ • Execute resolved SQL against Oracle                               │
-│ • Check if any rows (alerts) are returned                           │
-│                                                                     │
-│   ┌─ Alerts found? ──► ✅ Pipeline stops — scenario is working     │
-│   │                                                                │
-│   └─ No alerts ──────► Save resolved SQL, continue to CTE analysis │
-└────────────────────────────────┬────────────────────────────────────┘
-                                 │  (no alerts)
-                                 ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│ STEPS 4-6: Standard CTE Analysis                                    │
-│                                                                     │
-│ The resolved function SQL is treated like a standard scenario       │
-│ query from this point forward:                                      │
-│                                                                     │
-│ Step 4: CTE Parser → Split resolved SQL into CTEs                   │
-│ Step 5: CTE Executer → Run each CTE, find first empty               │
-│ Step 6: SQL Diagnostics → Granular diagnosis on failing CTE         │
-└─────────────────────────────────────────────────────────────────────┘
-```
+| JSON Key | SQL Param | Difference |
+|----------|-----------|------------|
+| `p_Incl_MI_Trxn_Prdct_Type_Lst` | `p_Incl_MI_Prdct_Type_Lst` | `Trxn` removed |
+| `p_Incl_Cash_Trxn_Prdct_Type_Lst` | `p_Incl_Csh_Prdct_Type_Lst` | `Trxn` removed, `Cash`→`Csh` |
 
-### Parameter Resolution Detail
+**Resolution Algorithm:**
 
-Function scenarios contain SQL like:
-```sql
-SELECT * FROM transactions
-WHERE amount > @p_CashThreshold
-  AND customer_type = '@p_CustomerType'
-```
-
-The log contains the actual values for these parameters. The resolution process:
-
-1. **Extract** the SQL portion between `IS` and `BEGIN` keywords from the function body
-2. **Match** each `@param` to its value from the log's parameter JSON
-3. **Substitute** directly — case-insensitive regex replacement
-4. **Fuzzy fallback** — if `@p_CashTrxnThreshold` doesn't match, try `@p_CashThreshold` (remove "Trxn"), `@p_CshThreshold` (Cash → Csh), etc.
-5. **Execute** the fully resolved SQL
+1. **Extract SQL params** from function signature
+2. **Normalize both sides** — expand abbreviations (csh→cash, prdct→product), strip filler words (transaction, list, type), remove underscores
+3. **Match & replace** — exact normalized match first, Levenshtein similarity fallback (>0.6 threshold)
 
 ---
 
-## System Architecture
+## Output Directory Structure
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│                     Browser (React SPA)                          │
-│                                                                  │
-│  Login → Dashboard → Upload .log → Results (live WebSocket)     │
-└──────────────────────────────────────────────────┬───────────────┘
-                                                   │
-                          HTTP (REST) + WebSocket (ws://)
-                                                   │
-┌──────────────────────────────────────────────────┼───────────────┐
-│                     FastAPI Backend (Python 3.13)                │
-│                                                                  │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌────────────────┐   │
-│  │  Auth    │  │ Upload   │  │  Jobs    │  │  WebSocket     │   │
-│  │  Routes  │  │ Handler  │  │  Runner  │  │  (live stream) │   │
-│  └──────────┘  └──────────┘  └────┬─────┘  └────────────────┘   │
-│                                    │                             │
-│                           ┌────────▼────────┐                   │
-│                           │   Orchestrator  │                   │
-│                           │  (runs steps    │                   │
-│                           │   with branching│                   │
-│                           │   for function  │                   │
-│                           │   vs standard)  │                   │
-│                           └────────┬────────┘                   │
-│                                    │                             │
-│    ┌───────────┬───────────┬───────┼───────┬───────────┐       │
-│    │           │           │       │       │           │       │
-│    ▼           ▼           ▼       ▼       ▼           ▼       │
-│  Step 1      Step 2     Step 3   Step 4  Step 5     Step 6    │
-│  log_reader  set_batch  sql_exec  cte_par cte_exec   sql_diag │
-│              _date      _uter     ser     _uter      _nostics │
-│                         └──┬──┘                                │
-│                      (branches here:                          │
-│                       standard vs function)                    │
-│                                                               │
-│  ┌─────────────────┐  ┌─────────────────┐  ┌──────────────┐  │
-│  │    SQLite DB     │  │  File System    │  │  Output Dir  │  │
-│  │  (users, jobs,  │  │  (uploads/)     │  │  (outputs/)  │  │
-│  │   audit_log)    │  │                 │  │              │  │
-│  └─────────────────┘  └─────────────────┘  └──────────────┘  │
-└───────────────────────┬───────────────────────────────────────┘
-                        │
-          ┌─────────────┴─────────────┐
-          │                           │
-          ▼                           ▼
-   ┌──────────────┐          ┌──────────────┐
-   │  Oracle DB   │          │ OFSAA Server │
-   │  (run SQL,   │          │  (SSH — set  │
-   │   check rows)│          │  batch date) │
-   └──────────────┘          └──────────────┘
-```
-
----
-
-## Orchestrator Branching Logic
-
-The orchestrator (`backend/orchestrator.py`) detects the scenario type after Step 1 and chooses the appropriate path:
-
-```
-Step 1 (Log Reader) completes
-        │
-        ├── multi_query = false ──► STANDARD FLOW
-        │                              │
-        │                              ▼
-        │                         Step 2 (Set Batch Date)
-        │                              │
-        │                              ▼
-        │                         Step 3 (SQL Executer)
-        │                              │
-        │                         ┌────┴────┐
-        │                         │         │
-        │                      alerts   no alerts
-        │                         │         │
-        │                      ✅ STOP    Step 4 (CTE Parser)
-        │                                    │
-        │                                    ▼
-        │                               Step 5 (CTE Executer)
-        │                                    │
-        │                                    ▼
-        │                               Step 6 (SQL Diagnostics)
-        │                                    │
-        │                                    ▼
-        │                               📋 Root cause
-        │
-        └── multi_query = true ───► FUNCTION FLOW
-                                       │
-                                       ▼
-                                  Step 2 (Set Batch Date)
-                                       │
-                                       ▼
-                                  Step 3 (Resolve & Execute)
-                                       │
-                                  ┌────┴────┐
-                                  │         │
-                               alerts   no alerts
-                                  │         │
-                               ✅ STOP    Save resolved SQL
-                                          Continue to Steps 4-6
+outputs/SCENARIO_NAME/
+├── metadata.json              # Scenario metadata + SCNRO_ID
+├── extracted_queries/
+│   ├── F_*.sql                # Function body (function flow only)
+│   ├── parameters_*.json      # Parameter values (function flow only)
+│   ├── *_reference_*.sql      # Reference queries
+│   └── *_dataset_*.sql        # Dataset queries (non-function) / resolved SQL (function)
+├── parsed_ctes/
+│   ├── 001_<name>.sql         # Individual CTEs
+│   ├── 002_<name>.sql
+│   ├── ...
+│   └── final_query.sql
+└── run_log_*.txt              # Structured per-run log
 ```
 
 ---
@@ -319,8 +147,17 @@ Pipeline Step → `asyncio.Queue` → WebSocket broadcast → React UI update
 | `step_failed` | Step errors | step name, error |
 | `job_completed` | All steps done | root cause, alerts, results |
 | `job_failed` | Pipeline crashed | error reason |
-| `job_state` | On WS connect | current job snapshot |
-| `ping` | Every 30s | keep-alive |
+
+---
+
+## Common Issues & Fixes
+
+| Issue | Scenario Type | Cause | Fix |
+|-------|--------------|-------|-----|
+| `ORA-00904: invalid identifier` | Function | Parameter not resolved | Check `_normalize()` — abbreviation map missing entry |
+| `ORA-00904: "TABLE"` | Both | `TABLE(CAST(...))` detected as missing table | Excluded `TABLE` from dependency check keywords |
+| `ORA-00942: table not found` | Non-Function | Missing Oracle table/view | Verify `@MINER@` schema access |
+| `ORA-01861: date format` | Both | Date format mismatch | Check batch date format vs Oracle date column |
 
 ---
 
@@ -333,42 +170,4 @@ SQLite at `<APP_BASE_PATH>/db/scenario_debugger.db`
 | `users` | Authentication, roles (admin/analyst), bcrypt hashed passwords |
 | `jobs` | Every pipeline run: status, scenario name, batch date, root cause, results |
 | `job_steps` | Per-step status for each job (powers live progress) |
-| `audit_log` | Immutable record of all actions (login, upload, pipeline, user mgmt) |
-
----
-
-## Output Directory
-
-```
-outputs/
-└── SCENARIO_NAME/
-    ├── metadata.json              # Extracted scenario metadata
-    ├── extracted_queries/
-    │   ├── dataset_query_*.sql    # Full scenario SQL (standard flow)
-    │   ├── F_*.sql                # Function body (function flow)
-    │   └── parameters_*.json      # Parameter values (function flow)
-    ├── parsed_ctes/
-    │   ├── cte_01_<name>.sql      # Individual CTEs
-    │   ├── cte_02_<name>.sql
-    │   ├── ...
-    │   └── final_query.sql
-    └── run_log_*.txt              # Structured per-run log
-```
-
----
-
-## Security
-
-- Passwords: **bcrypt** hashed, never plain text
-- Auth: **JWT** tokens (HS256), configurable expiry (default 8h)
-- Roles: `admin` (full access) / `analyst` (own jobs only)
-- LDAP optional for enterprise Active Directory integration
-- Uploads: `.log`/`.txt` only, max 50 MB
-- CORS restricted, global exception handler prevents trace leakage
-- Audit log tracks all sensitive actions
-
----
-
-## Caching
-
-Before starting a new pipeline run, the system checks if a completed job already exists for the same scenario name + batch date. If found, it returns the cached result immediately. Pass `?force=true` to bypass.
+| `audit_log` | Immutable record of all actions |

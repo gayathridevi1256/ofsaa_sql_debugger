@@ -28,12 +28,13 @@ def check_dependency_views_exist(conn, cte_sql: str) -> list[str]:
     """Returns names of tables/views referenced in FROM/JOIN that don't exist."""
     cursor = conn.cursor()
     missing = []
+    sql_keywords = {"TABLE", "SELECT", "WHERE", "AND", "OR", "NOT", "IN", "AS", "ON", "IS", "NULL", "TRUE", "FALSE", "EXISTS", "BETWEEN", "LIKE", "CASE", "WHEN", "THEN", "ELSE", "END", "CAST", "LST"}
     tokens = cte_sql.upper().split()
     referenced = []
     for i, token in enumerate(tokens):
         if token in ("FROM", "JOIN") and i + 1 < len(tokens):
             name = tokens[i + 1].strip("(),")
-            if name and name != "(" and not name.startswith("(") and name.isidentifier():
+            if name and name not in sql_keywords and name.isidentifier():
                 referenced.append(name)
     for name in set(referenced):
         try:
@@ -80,12 +81,238 @@ def execute_count(conn, sql: str, metadata: dict = None, run_logger=None, step=N
     cursor = conn.cursor()
     try:
         cursor.execute(f"SELECT COUNT(*) FROM (\n{sql}\n) t")
-        return cursor.fetchone()[0]
+        count = cursor.fetchone()[0]
+        if run_logger and label:
+            run_logger.log(step, f"EXECUTING SQL: {label} — {count:,} rows")
+        return count
     except Exception as e:
         logger.debug("execute_count error: %s", e)
+        if run_logger and label:
+            run_logger.log(step, f"EXECUTING SQL: {label} — ERROR: {e}")
         return 0
     finally:
         cursor.close()
+
+
+def execute_full_sql(conn, sql: str, metadata: dict = None, run_logger=None, step=None, label=None) -> int:
+    """Executes the full SQL as-is and returns the row count. Used for verification."""
+    if not sql or not sql.strip():
+        return 0
+    if metadata:
+        business_date = metadata.get("current_business_date")
+        if business_date:
+            sql = re.sub(
+                r'@(?:current_business_date|batch_date|business_date)',
+                f"TO_DATE('{business_date}','YYYY-MM-DD')",
+                sql, flags=re.IGNORECASE
+            )
+    if run_logger and step and label:
+        run_logger.log_sql(step, label, sql)
+    cursor = conn.cursor()
+    try:
+        cursor.execute(sql)
+        results = cursor.fetchall()
+        count = len(results)
+        if run_logger and label:
+            status = "ALERTS GENERATED" if count > 0 else "NO ALERTS"
+            run_logger.log(step, f"VERIFICATION: {label} — {count:,} rows — {status}")
+        return count
+    except Exception as e:
+        logger.debug("execute_full_sql error: %s", e)
+        if run_logger and label:
+            run_logger.log(step, f"VERIFICATION: {label} — ERROR: {e}")
+        return 0
+    finally:
+        cursor.close()
+
+
+def verify_killer_condition(
+    conn, killer_condition: str, resolved_sql_file: str, metadata: dict,
+    run_logger=None, output_dir: str = ""
+) -> dict:
+    """
+    Comments out the killer condition in the resolved function SQL,
+    re-executes, and checks if alerts are generated.
+    """
+    result = {"verified": False, "rows": 0, "message": ""}
+
+    if not os.path.exists(resolved_sql_file):
+        result["message"] = f"Resolved SQL file not found: {resolved_sql_file}"
+        return result
+
+    with open(resolved_sql_file, "r", encoding="utf-8") as f:
+        full_sql = f.read()
+
+    killer_stripped = killer_condition.strip()
+
+    pattern = re.compile(r'^(\s*)' + re.escape(killer_stripped), re.MULTILINE)
+    match = pattern.search(full_sql)
+
+    if match:
+        leading_ws = match.group(1)
+        replacement = f"{leading_ws}-- [DIAG COMMENTED OUT] {killer_stripped}"
+        commented_sql = pattern.sub(replacement, full_sql, count=1)
+    else:
+        flex_pattern = r'\s*'.join(re.escape(p) for p in killer_stripped.split())
+        flex_re = re.compile(flex_pattern, re.IGNORECASE | re.DOTALL)
+        match = flex_re.search(full_sql)
+        if match:
+            commented_sql = full_sql[:match.start()] + f"-- [DIAG COMMENTED OUT] {killer_stripped}" + full_sql[match.end():]
+        else:
+            commented_sql = full_sql.replace(killer_stripped, f"-- [DIAG COMMENTED OUT] {killer_stripped}")
+
+    if commented_sql == full_sql:
+        lines = killer_stripped.split("\n")
+        if len(lines) > 1:
+            pattern = re.compile(re.escape(killer_stripped), re.DOTALL)
+            commented_sql = pattern.sub(f"-- [DIAG COMMENTED OUT]\n{killer_stripped}", full_sql, count=1)
+
+    if commented_sql == full_sql:
+        result["message"] = f"Could not find killer condition in resolved SQL: {killer_stripped[:80]}..."
+        return result
+
+    if run_logger:
+        run_logger.log(6, f"VERIFICATION: Commenting out killer condition:")
+        run_logger.log(6, f"  -- {killer_stripped[:120]}...")
+
+    count = execute_full_sql(
+        conn, commented_sql, metadata, run_logger=run_logger,
+        step=6, label="verify_killer_commented_out"
+    )
+
+    result["verified"] = count > 0
+    result["rows"] = count
+    if count > 0:
+        result["message"] = f"✅ ALERTS GENERATED — {count:,} rows returned with condition commented out"
+    else:
+        result["message"] = f"❌ Still NO ALERTS — 0 rows even with condition commented out"
+
+    return result
+
+
+def _verify_where_combination(
+    conn, resolved_sql_file: str, where_conditions: list[str],
+    metadata: dict, run_logger=None
+) -> dict:
+    """
+    Comments out ALL outer WHERE conditions in the resolved function SQL
+    and re-executes to verify alerts would be generated when the WHERE
+    combination is removed.
+    """
+    result = {"verified": False, "rows": 0, "message": "",
+              "conditions_commented": 0, "conditions_total": len(where_conditions)}
+
+    if not os.path.exists(resolved_sql_file):
+        result["message"] = f"Resolved SQL file not found: {resolved_sql_file}"
+        return result
+
+    if not where_conditions:
+        result["message"] = "No WHERE conditions provided to verify"
+        return result
+
+    with open(resolved_sql_file, "r", encoding="utf-8") as f:
+        full_sql = f.read()
+
+    commented_sql = full_sql
+    commented_count = 0
+
+    def _strip_comments_from_cond(cond_text: str) -> str:
+        cond_text = re.sub(r'/\*.*?\*/', '', cond_text, flags=re.DOTALL)
+        cond_text = re.sub(r'--[^\n]*', '', cond_text)
+        return cond_text.strip()
+
+    for cond in where_conditions:
+        cond_stripped = _strip_comments_from_cond(cond.strip())
+        if not cond_stripped:
+            continue
+        cond_linear = " ".join(cond_stripped.split())
+
+        matched = False
+
+        for strategy, matcher in [
+            ("exact_multiline", lambda: _try_exact_multiline(commented_sql, cond_stripped)),
+            ("linear_whitespace", lambda: _try_linear_whitespace(commented_sql, cond_linear)),
+            ("core_first_60", lambda: _try_first_n_chars(commented_sql, cond_stripped, 60)),
+            ("substring", lambda: _try_substring(commented_sql, cond_stripped)),
+        ]:
+            try:
+                res = matcher()
+                if res is not None:
+                    commented_sql = res
+                    matched = True
+                    break
+            except Exception:
+                continue
+
+        if matched:
+            commented_count += 1
+        elif run_logger:
+            run_logger.log(6, f"VERIFICATION: Could not match condition in resolved SQL: {cond_stripped[:80]}...")
+
+    result["conditions_commented"] = commented_count
+
+    if run_logger:
+        run_logger.log(6, f"VERIFICATION: Commented out {commented_count}/{len(where_conditions)} WHERE conditions in resolved SQL")
+
+    if commented_count == 0:
+        result["message"] = f"Could not find any of the {len(where_conditions)} WHERE conditions in resolved SQL — manual verification needed"
+        return result
+
+    count = execute_full_sql(
+        conn, commented_sql, metadata, run_logger=run_logger,
+        step=6, label="verify_where_combination"
+    )
+
+    result["verified"] = count > 0
+    result["rows"] = count
+    if count > 0:
+        result["message"] = f"✅ ALERTS GENERATED — {count:,} rows returned with {commented_count}/{len(where_conditions)} WHERE conditions commented out"
+    else:
+        result["message"] = f"❌ Still NO ALERTS — 0 rows even with {commented_count}/{len(where_conditions)} WHERE conditions commented out"
+
+    return result
+
+
+def _try_exact_multiline(sql: str, cond: str):
+    """Match condition on its own line (with leading whitespace)."""
+    pattern = re.compile(r'^(\s*)' + re.escape(cond), re.MULTILINE)
+    match = pattern.search(sql)
+    if match:
+        leading_ws = match.group(1)
+        replacement = f"{leading_ws}-- [DIAG COMMENTED OUT] {cond}"
+        return pattern.sub(replacement, sql, count=1)
+    return None
+
+
+def _try_linear_whitespace(sql: str, cond_linear: str):
+    """Match condition ignoring all whitespace differences."""
+    flex_pattern = r'\s*'.join(re.escape(p) for p in cond_linear.split())
+    flex_re = re.compile(flex_pattern, re.IGNORECASE | re.DOTALL)
+    match = flex_re.search(sql)
+    if match:
+        return sql[:match.start()] + f"-- [DIAG COMMENTED OUT] {cond_linear[:120]}" + sql[match.end():]
+    return None
+
+
+def _try_first_n_chars(sql: str, cond: str, n: int):
+    """Match on the first N characters of the condition (ignoring trailing subquery/whitespace)."""
+    core = cond[:n].rstrip()
+    if len(core) < 20:
+        return None
+    # Try flex whitespace on the core
+    flex_pattern = r'\s*'.join(re.escape(p) for p in core.split())
+    flex_re = re.compile(flex_pattern, re.IGNORECASE | re.DOTALL)
+    match = flex_re.search(sql)
+    if match:
+        return sql[:match.start()] + f"-- [DIAG COMMENTED OUT] {core}..." + sql[match.end():]
+    return None
+
+
+def _try_substring(sql: str, cond: str):
+    """Fallback: simple substring replacement (single occurrence only)."""
+    if cond in sql and sql.count(cond) == 1:
+        return sql.replace(cond, f"-- [DIAG COMMENTED OUT] {cond}")
+    return None
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -138,7 +365,19 @@ def parse_sql_structure(sql: str) -> dict:
     parts     = join_split_pattern.split(from_block)
     base_from = parts[0].strip()
     joins     = [p.strip() for p in parts[1:] if p.strip()]
+
+    group_block = ""
+    if group_pos != -1:
+        end_of_group = next(
+            (p for p in [having_pos, order_pos] if p != -1),
+            len(clean)
+        )
+        group_block = clean[group_pos:end_of_group].strip()
+
     from_with_joins = select_sql + "\n" + from_block
+    from_with_joins_and_group = select_sql + "\n" + from_block
+    if group_block:
+        from_with_joins_and_group += "\n" + group_block
 
     where_conditions = []
     if where_pos != -1:
@@ -163,9 +402,11 @@ def parse_sql_structure(sql: str) -> dict:
         "base_from":          base_from,
         "joins":              joins,
         "from_with_joins":    from_with_joins,
+        "from_with_joins_and_group": from_with_joins_and_group,
         "where_conditions":   where_conditions,
         "having_conditions":  having_conditions,
-        "before_having":      before_having
+        "before_having":      before_having,
+        "group_by":           group_block,
     }
 
 
@@ -1186,7 +1427,7 @@ def _inject_having(sql_without_having: str, having_clause: str) -> str:
     )
 
 
-def _analyze_branch_failure(conn, branch_sql: str, metadata: dict, run_logger=None) -> dict:
+def _analyze_branch_failure(conn, branch_sql: str, metadata: dict, run_logger=None, output_dir: str = "") -> dict:
     """
     For a zero-count UNION ALL branch, explains WHY it returns 0 rows:
       1. Counts each source table individually
@@ -1309,6 +1550,8 @@ def _analyze_branch_failure(conn, branch_sql: str, metadata: dict, run_logger=No
                 result["explanation"]             = (
                     f"WHERE condition eliminates all rows: {cond.strip()[:150]}"
                 )
+                result["killing_condition_index"] = i
+                result["rows_without_killer"] = cur
 
         if "issue" not in result:
             # All conditions individually appear necessary — combination is too restrictive
@@ -1319,10 +1562,48 @@ def _analyze_branch_failure(conn, branch_sql: str, metadata: dict, run_logger=No
             )
 
     result["where_analysis"] = where_analysis
+
+    # VERIFICATION: If a killing condition was found, verify by commenting it out in resolved SQL
+    if result.get("killing_where_condition") and output_dir:
+        resolved_sql_file = ""
+        extracted_dir = os.path.join(output_dir, "extracted_queries")
+        if os.path.isdir(extracted_dir):
+            dataset_files = [
+                os.path.join(extracted_dir, f)
+                for f in os.listdir(extracted_dir)
+                if "resolved_function_dataset" in f.lower() and f.lower().endswith(".sql")
+            ]
+            if dataset_files:
+                resolved_sql_file = max(dataset_files, key=os.path.getmtime)
+
+        if resolved_sql_file:
+            killer = result["killing_where_condition"]
+            if run_logger:
+                run_logger.log(6, f"VERIFICATION: Loading resolved SQL from {os.path.basename(resolved_sql_file)}")
+                run_logger.log(6, f"VERIFICATION: Commenting out: {killer[:120]}...")
+            verification = verify_killer_condition(
+                conn, killer, resolved_sql_file, metadata,
+                run_logger=run_logger, output_dir=output_dir
+            )
+            result["verification"] = verification
+            if run_logger:
+                run_logger.log(6, f"VERIFICATION RESULT: {verification['message']}")
+            if verification.get("verified"):
+                result["explanation"] = (
+                    f"✅ VERIFIED: Commenting out '{killer[:80]}...' generates {verification['rows']:,} alerts. "
+                    f"This condition is the root cause."
+                )
+            else:
+                result["explanation"] = (
+                    f"⚠️ KILLER CONDITION FOUND (not verified): '{killer[:80]}...' "
+                    f"Removing this condition restores {result.get('rows_without_killer', 0):,} rows. "
+                    f"Verification failed: {verification.get('message', 'Could not locate in resolved SQL')}"
+                )
+
     return result
 
 
-def _probe_union_all_branches(conn, sql: str, metadata: dict, run_logger=None) -> list[dict]:
+def _probe_union_all_branches(conn, sql: str, metadata: dict, run_logger=None, output_dir: str = "") -> list[dict]:
     """
     Finds the UNION ALL block (at any nesting depth), counts rows per branch,
     and for zero-count branches calls _analyze_branch_failure.
@@ -1405,7 +1686,7 @@ def _probe_union_all_branches(conn, sql: str, metadata: dict, run_logger=None) -
             "preview":      branch[:200].replace('\n', ' ').strip(),
         }
         if count == 0:
-            entry["failure_analysis"] = _analyze_branch_failure(conn, branch, metadata, run_logger=run_logger)
+            entry["failure_analysis"] = _analyze_branch_failure(conn, branch, metadata, run_logger=run_logger, output_dir=output_dir)
         results.append(entry)
     return results
 
@@ -1463,7 +1744,7 @@ def _probe_source_views(conn, sql: str, metadata: dict) -> list[dict]:
 def _analyze_inner_subquery(
     conn, sql: str, metadata: dict, threshold_bindings: dict,
     threshold_config: dict = None, param_mapping: dict = None,
-    run_logger=None
+    run_logger=None, output_dir: str = ""
 ) -> dict:
     """
     Called for UNKNOWN cases.  Tries multiple strategies to explain why the CTE
@@ -1475,7 +1756,7 @@ def _analyze_inner_subquery(
 
     # ── Strategy 1: Does the inner subquery return rows WITHOUT the outer WHERE? ──
     parsed   = parse_sql_structure(sql)
-    base_sql = parsed["from_with_joins"]   # SELECT + FROM block, no outer WHERE
+    base_sql = parsed.get("from_with_joins_and_group") or parsed["from_with_joins"]   # SELECT + FROM + GROUP BY, no outer WHERE
 
     if not base_sql:
         findings["issue"]       = "parse_failed"
@@ -1511,6 +1792,44 @@ def _analyze_inner_subquery(
                     stats_list.append({"column": col, **stats})
         if stats_list:
             findings["column_stats"] = stats_list
+
+        # VERIFICATION: Comment out ALL outer WHERE conditions in the resolved SQL
+        findings["where_conditions"] = parsed.get("where_conditions", [])
+        if output_dir:
+            extracted_dir = os.path.join(output_dir, "extracted_queries")
+            if os.path.isdir(extracted_dir):
+                dataset_files = [
+                    os.path.join(extracted_dir, f)
+                    for f in os.listdir(extracted_dir)
+                    if "resolved_function_dataset" in f.lower() and f.lower().endswith(".sql")
+                ]
+                if dataset_files:
+                    resolved_sql_file = max(dataset_files, key=os.path.getmtime)
+                    verification = _verify_where_combination(
+                        conn, resolved_sql_file, findings["where_conditions"],
+                        metadata, run_logger=run_logger
+                    )
+                    findings["verification"] = verification
+                    if verification.get("verified"):
+                        findings["explanation"] = (
+                            f"VERIFIED: Inner query returns {base_count:,} rows before outer WHERE. "
+                            f"Commenting out {verification.get('conditions_commented', 0)}/{verification.get('conditions_total', 0)} "
+                            f"outer WHERE conditions generates {verification['rows']:,} alerts. "
+                            f"The combined WHERE conditions are the root cause."
+                        )
+                    elif verification.get("conditions_commented", 0) > 0:
+                        findings["explanation"] = (
+                            f"Inner query returns {base_count:,} rows before outer WHERE. "
+                            f"Commented out {verification.get('conditions_commented', 0)}/{verification.get('conditions_total', 0)} WHERE conditions "
+                            f"but still 0 alerts — deeper issue likely "
+                            f"(check HAVING, JOINs, or data availability within the inner subquery)."
+                        )
+                    else:
+                        findings["explanation"] = (
+                            f"Inner query returns {base_count:,} rows before outer WHERE. "
+                            f"Could not match WHERE conditions in resolved SQL for verification. "
+                            f"Manually comment out WHERE conditions to confirm root cause."
+                        )
         return findings
 
     # ── base_count == 0: problem is INSIDE the inner subquery ────────────────
@@ -1575,7 +1894,7 @@ def _analyze_inner_subquery(
                 "The source tables/views contain no data for the current date window. "
                 "Check each UNION ALL branch below for which data source is missing."
             )
-            branch_counts = _probe_union_all_branches(conn, base_sql, metadata, run_logger=run_logger)
+            branch_counts = _probe_union_all_branches(conn, base_sql, metadata, run_logger=run_logger, output_dir=output_dir)
             if branch_counts:
                 findings["union_all_branch_counts"] = branch_counts
             view_info = _probe_source_views(conn, sql, metadata)
@@ -1590,7 +1909,7 @@ def _analyze_inner_subquery(
             "Check the source tables below — one or more may be empty or have no "
             "data for the current batch date."
         )
-        branch_counts = _probe_union_all_branches(conn, base_sql, metadata, run_logger=run_logger)
+        branch_counts = _probe_union_all_branches(conn, base_sql, metadata, run_logger=run_logger, output_dir=output_dir)
         if branch_counts:
             findings["union_all_branch_counts"] = branch_counts
         view_info = _probe_source_views(conn, sql, metadata)
@@ -1789,7 +2108,7 @@ def _verify_killer_source(conn, killer_cond: str, base_from: str, metadata: dict
 def diagnose_where_conditions(
     conn, sql: str, metadata: dict = None,
     threshold_bindings: dict = None, threshold_config: dict = None,
-    param_mapping: dict = None, run_logger=None
+    param_mapping: dict = None, run_logger=None, output_dir: str = ""
 ) -> dict | None:
     """
     Finds which WHERE condition(s) eliminate all rows using a "remove one" approach.
@@ -1803,7 +2122,7 @@ def diagnose_where_conditions(
     - Works consistently for comma-join, explicit JOIN, and subquery CTEs
     """
     parsed     = parse_sql_structure(sql)
-    base_sql   = parsed["from_with_joins"]
+    base_sql   = parsed.get("from_with_joins_and_group") or parsed["from_with_joins"]
     conditions = parsed["where_conditions"]
     if not base_sql:
         logger.warning("parse_sql_structure returned empty from_with_joins — cannot diagnose WHERE")
@@ -1834,6 +2153,29 @@ def diagnose_where_conditions(
     if primary_killer is None:
         # All conditions individually appear necessary — combination too restrictive
         return None
+
+    # VERIFICATION: Comment out the killer in the resolved SQL and re-execute
+    resolved_sql_file = ""
+    if output_dir:
+        extracted_dir = os.path.join(output_dir, "extracted_queries")
+        if os.path.isdir(extracted_dir):
+            dataset_files = [
+                os.path.join(extracted_dir, f)
+                for f in os.listdir(extracted_dir)
+                if "resolved_function_dataset" in f.lower() and f.lower().endswith(".sql")
+            ]
+            if dataset_files:
+                resolved_sql_file = max(dataset_files, key=os.path.getmtime)
+
+    if resolved_sql_file:
+        if run_logger:
+            run_logger.log(6, f"VERIFICATION: Loading resolved SQL from {os.path.basename(resolved_sql_file)}")
+        verification = verify_killer_condition(
+            conn, primary_killer, resolved_sql_file, metadata,
+            run_logger=run_logger, output_dir=output_dir
+        )
+        if run_logger:
+            run_logger.log(6, f"VERIFICATION RESULT: {verification['message']}")
 
     # Build the SQL without the primary killer for OR drill-down / threshold lookup
     other_conditions = [c for c in conditions if c.strip() != primary_killer]
@@ -1897,6 +2239,20 @@ def diagnose_where_conditions(
     if source_check is not None:
         result["source_check"] = source_check
 
+    # Add verification result
+    if resolved_sql_file:
+        result["verification"] = verification
+        if verification.get("verified"):
+            result["likely_cause"] = (
+                f"VERIFIED: Commenting out '{primary_killer[:80]}...' generates {verification['rows']:,} alerts. "
+                f"This condition is the root cause."
+            )
+        else:
+            result["likely_cause"] = (
+                f"Condition '{primary_killer[:80]}...' identified as killer, "
+                f"but commenting it out still yields 0 rows. Combination of conditions may be the issue."
+            )
+
     # Try OR drill-down on the primary killer
     or_analysis = _drill_or_block(
         conn, primary_killer, base_without_killer,
@@ -1923,7 +2279,7 @@ def diagnose_where_conditions(
 def diagnose_having_conditions(
     conn, sql: str, metadata: dict = None,
     threshold_bindings: dict = None, threshold_config: dict = None,
-    param_mapping: dict = None, run_logger=None
+    param_mapping: dict = None, run_logger=None, output_dir: str = ""
 ) -> dict | None:
     parsed     = parse_sql_structure(sql)
     base_sql   = parsed["before_having"]
@@ -1942,6 +2298,30 @@ def diagnose_having_conditions(
         print(f"    {condition[:120]}")
 
         if prev_count > 0 and cur_count == 0:
+            # VERIFICATION: Comment out the killer in the resolved SQL and re-execute
+            resolved_sql_file = ""
+            if output_dir:
+                extracted_dir = os.path.join(output_dir, "extracted_queries")
+                if os.path.isdir(extracted_dir):
+                    dataset_files = [
+                        os.path.join(extracted_dir, f)
+                        for f in os.listdir(extracted_dir)
+                        if "resolved_function_dataset" in f.lower() and f.lower().endswith(".sql")
+                    ]
+                    if dataset_files:
+                        resolved_sql_file = max(dataset_files, key=os.path.getmtime)
+
+            verification = None
+            if resolved_sql_file:
+                if run_logger:
+                    run_logger.log(6, f"VERIFICATION: Loading resolved SQL from {os.path.basename(resolved_sql_file)}")
+                verification = verify_killer_condition(
+                    conn, condition.strip(), resolved_sql_file, metadata,
+                    run_logger=run_logger, output_dir=output_dir
+                )
+                if run_logger:
+                    run_logger.log(6, f"VERIFICATION RESULT: {verification['message']}")
+
             result = {
                 "failure_type":      "HAVING",
                 "failure_condition": condition,
@@ -1953,6 +2333,19 @@ def diagnose_having_conditions(
                     full_cte_sql=sql, param_mapping=param_mapping
                 ),
             }
+            if verification:
+                result["verification"] = verification
+                if verification.get("verified"):
+                    result["likely_cause"] = (
+                        f"VERIFIED: Commenting out '{condition.strip()[:80]}...' generates {verification['rows']:,} alerts. "
+                        f"This HAVING condition is the root cause."
+                    )
+                else:
+                    result["likely_cause"] = (
+                        f"⚠️ KILLER HAVING CONDITION FOUND (not verified): '{condition.strip()[:80]}...' "
+                        f"Removing this condition restores rows. "
+                        f"Verification failed: {verification.get('message', 'Could not locate in resolved SQL')}"
+                    )
             return result
 
         prev_count = cur_count
@@ -2469,7 +2862,7 @@ def eliminate_conditions_and_retry(
             run_logger.log(6, "--- Phase 2: Eliminating WHERE conditions ---")
         else:
             print("\n  --- Phase 2: Eliminating WHERE conditions ---")
-        base_sql = parsed["from_with_joins"]
+        base_sql = parsed.get("from_with_joins_and_group") or parsed["from_with_joins"]
         for i, wcond in enumerate(parsed["where_conditions"]):
             remaining = [c for j, c in enumerate(parsed["where_conditions"]) if j != i]
             test_sql = base_sql + ("\nWHERE " + "\n  AND ".join(remaining) if remaining else "")
@@ -2634,9 +3027,15 @@ def run_granular_cte_diagnostics(
     threshold_bindings = _get_threshold_bindings(conn, tshld_set_id)
     threshold_config   = _get_threshold_config(conn, tshld_set_id)
     if threshold_bindings:
-        print(f"\n  Loaded {len(threshold_bindings)} threshold bindings from KDD_TSHLD_BINDING")
+        msg = f"Loaded {len(threshold_bindings)} threshold bindings from KDD_TSHLD_BINDING"
+        print(f"\n  {msg}")
+        if run_logger:
+            run_logger.log(6, msg)
     if threshold_config:
-        print(f"  Loaded {len(threshold_config)} threshold definitions from KDD_TSHLD")
+        msg = f"Loaded {len(threshold_config)} threshold definitions from KDD_TSHLD"
+        print(f"  {msg}")
+        if run_logger:
+            run_logger.log(6, msg)
 
     # Build col→param mapping from the main SQL so literal-value conditions in the
     # dataset SQL can be resolved to their KDD_TSHLD threshold names.
@@ -2645,6 +3044,8 @@ def run_granular_cte_diagnostics(
 
     if param_mapping and threshold_config:
         print("\n  THRESHOLD PARAMETERS (from main SQL @params → KDD_TSHLD):")
+        if run_logger:
+            run_logger.log(6, "THRESHOLD PARAMETERS (from main SQL @params → KDD_TSHLD):")
         seen: set = set()
         for col_lower, ops in sorted(param_mapping.items()):
             for op, param_name in sorted(ops.items()):
@@ -2653,8 +3054,10 @@ def run_granular_cte_diagnostics(
                 seen.add(param_name)
                 entry = threshold_config.get(param_name)
                 if entry:
-                    print(f"    {param_name}: curr={entry.get('curr')}, "
-                          f"min={entry.get('min')}, max={entry.get('max')}")
+                    line = f"  {param_name}: curr={entry.get('curr')}, min={entry.get('min')}, max={entry.get('max')}"
+                    print(f"    {param_name}: curr={entry.get('curr')}, min={entry.get('min')}, max={entry.get('max')}")
+                    if run_logger:
+                        run_logger.log(6, line)
 
     results = []
 
@@ -2767,6 +3170,17 @@ def run_granular_cte_diagnostics(
                     result["_inner_query_views"] = first.get("created_views", [])
                     results.append(result)
                     _print_root_cause(cte_name, result)
+                    if run_logger:
+                        run_logger.log(6, f"Result: {cte_name} — {result.get('failure_type', 'unknown')} — {result.get('likely_cause', '')[:200]}")
+                        da = result.get("data_availability", {})
+                        if da.get("rows_without_outer_where") is not None:
+                            run_logger.log(6, f"  Rows without outer WHERE: {da['rows_without_outer_where']:,}")
+                        if da.get("rows_without_inner_having") is not None:
+                            run_logger.log(6, f"  Rows without inner HAVING: {da['rows_without_inner_having']:,}")
+                        if da.get("union_all_branch_counts"):
+                            for b in da["union_all_branch_counts"]:
+                                status = "OK" if b["row_count"] > 0 else "EMPTY"
+                                run_logger.log(6, f"  Branch {b['branch_num']:2d} {status} {b['row_count']:>8,} FROM {b['from_table']}")
                     continue
 
         # Step 3: JOINs
@@ -2782,13 +3196,19 @@ def run_granular_cte_diagnostics(
                 _print_root_cause(cte_name, result)
                 if run_logger:
                     run_logger.log(6, f"Result: JOIN issue found — {join_result.get('failure_condition', '')[:100]}")
+                    if join_result.get("join_data_availability"):
+                        for j in join_result["join_data_availability"]:
+                            run_logger.log(6, f"  JOIN {j.get('join_condition', '')[:80]}: rows={j.get('rows', 0):,}")
                 continue
             if run_logger:
                 run_logger.log(6, "No JOIN issues found.")
             else:
                 print("  No JOIN issues found.")
         except Exception as e:
-            print(f"  ❌ JOIN diagnosis error: {e}")
+            msg = f"JOIN diagnosis error: {e}"
+            print(f"  ❌ {msg}")
+            if run_logger:
+                run_logger.log(6, f"ERROR: {msg}")
 
         # Step 4: WHERE
         try:
@@ -2798,7 +3218,8 @@ def run_granular_cte_diagnostics(
                 print("\n  --- Checking WHERE conditions ---")
             where_result = diagnose_where_conditions(
                 conn, sql, metadata, threshold_bindings, threshold_config,
-                param_mapping=param_mapping, run_logger=run_logger
+                param_mapping=param_mapping, run_logger=run_logger,
+                output_dir=output_dir
             )
             if where_result:
                 result.update(where_result)
@@ -2806,13 +3227,26 @@ def run_granular_cte_diagnostics(
                 _print_root_cause(cte_name, result)
                 if run_logger:
                     run_logger.log(6, f"Result: WHERE issue found — {where_result.get('failure_condition', '')[:100]}")
+                    verification = where_result.get("verification")
+                    if verification:
+                        run_logger.log(6, f"  VERIFICATION: {verification.get('message', '')}")
+                    if where_result.get("where_analysis"):
+                        for w in where_result["where_analysis"]:
+                            flag = "KILLS" if w.get("kills_rows") else "OK"
+                            run_logger.log(6, f"  [{flag}] rows={w.get('rows_without_this_cond', 0):>8,} | {w.get('condition', '')[:80]}")
+                    if where_result.get("threshold_suggestions"):
+                        for s in where_result["threshold_suggestions"]:
+                            run_logger.log(6, f"  Suggestion: {s.get('column')} — {s.get('suggestion', '')[:100]}")
                 continue
             if run_logger:
                 run_logger.log(6, "No WHERE issues found.")
             else:
                 print("  No WHERE issues found.")
         except Exception as e:
-            print(f"  ❌ WHERE diagnosis error: {e}")
+            msg = f"WHERE diagnosis error: {e}"
+            print(f"  ❌ {msg}")
+            if run_logger:
+                run_logger.log(6, f"ERROR: {msg}")
 
         # Step 5: HAVING
         try:
@@ -2822,7 +3256,8 @@ def run_granular_cte_diagnostics(
                 print("\n  --- Checking HAVING conditions ---")
             having_result = diagnose_having_conditions(
                 conn, sql, metadata, threshold_bindings, threshold_config,
-                param_mapping=param_mapping, run_logger=run_logger
+                param_mapping=param_mapping, run_logger=run_logger,
+                output_dir=output_dir
             )
             if having_result:
                 result.update(having_result)
@@ -2830,13 +3265,23 @@ def run_granular_cte_diagnostics(
                 _print_root_cause(cte_name, result)
                 if run_logger:
                     run_logger.log(6, f"Result: HAVING issue found — {having_result.get('failure_condition', '')[:100]}")
+                    verification = having_result.get("verification")
+                    if verification:
+                        run_logger.log(6, f"  VERIFICATION: {verification.get('message', '')}")
+                    if having_result.get("having_analysis"):
+                        for h in having_result["having_analysis"]:
+                            flag = "KILLS" if h.get("kills_rows") else "OK"
+                            run_logger.log(6, f"  [{flag}] rows={h.get('rows_without_this_cond', 0):>8,} | {h.get('condition', '')[:80]}")
                 continue
             if run_logger:
                 run_logger.log(6, "No HAVING issues found.")
             else:
                 print("  No HAVING issues found.")
         except Exception as e:
-            print(f"  ❌ HAVING diagnosis error: {e}")
+            msg = f"HAVING diagnosis error: {e}"
+            print(f"  ❌ {msg}")
+            if run_logger:
+                run_logger.log(6, f"ERROR: {msg}")
 
         # Step 6: UNKNOWN — deep dive into inner subquery
         if run_logger:
@@ -2846,19 +3291,120 @@ def run_granular_cte_diagnostics(
         try:
             inner_analysis = _analyze_inner_subquery(
                 conn, sql, metadata, threshold_bindings, threshold_config,
-                param_mapping=param_mapping, run_logger=run_logger
+                param_mapping=param_mapping, run_logger=run_logger,
+                output_dir=output_dir
             )
             result["data_availability"] = inner_analysis
+
+            killer_found = None
+            for branch in inner_analysis.get("union_all_branch_counts", []):
+                fa = branch.get("failure_analysis", {})
+                if fa.get("killing_where_condition"):
+                    killer_found = fa
+                    break
+
+            if killer_found:
+                result["failure_type"] = "where_condition"
+                result["failure_condition"] = killer_found.get("killing_where_condition")
+                result["likely_cause"] = killer_found.get("explanation", "Killer condition found in UNION branch")
+                if killer_found.get("verification"):
+                    result["verification"] = killer_found["verification"]
+            elif inner_analysis.get("issue") == "where_combination":
+                result["failure_type"] = "where_combination"
+                verification = inner_analysis.get("verification")
+                if isinstance(verification, dict) and verification.get("verified"):
+                    result["verification"] = verification
+                    result["likely_cause"] = (
+                        f"VERIFIED: Inner query returns {inner_analysis.get('rows_without_outer_where', 0):,} rows "
+                        f"before outer WHERE. Commenting out all {verification.get('conditions_commented', 0)}/{verification.get('conditions_total', len(inner_analysis.get('where_conditions', [])))} "
+                        f"outer WHERE conditions generates {verification['rows']:,} alerts. "
+                        f"The combined WHERE conditions are the root cause."
+                    )
+                elif isinstance(verification, dict):
+                    result["verification"] = verification
+                    rows_before = inner_analysis.get("rows_without_outer_where", 0)
+                    if verification.get("conditions_commented", 0) == 0:
+                        result["likely_cause"] = (
+                            f"Inner query returns {rows_before:,} rows before outer WHERE, but no single WHERE "
+                            f"condition eliminates rows on its own. The combined conditions are too restrictive. "
+                            f"Verification could not match WHERE conditions in resolved SQL — "
+                            f"manually comment out WHERE conditions in the resolved function dataset SQL to confirm."
+                        )
+                    else:
+                        result["likely_cause"] = (
+                            f"Inner query returns {rows_before:,} rows before outer WHERE, but the combined WHERE "
+                            f"conditions eliminate all rows. Verification commented out "
+                            f"{verification.get('conditions_commented', 0)}/{verification.get('conditions_total', 0)} conditions "
+                            f"but still generated 0 alerts — deeper issue likely "
+                            f"(e.g., HAVING or JOINs inside the inner subquery). "
+                            f"Inner subquery without outer WHERE has data, so review WHERE conditions as primary suspect."
+                        )
+                else:
+                    result["likely_cause"] = inner_analysis.get("explanation", "")
+            elif inner_analysis.get("issue") in ("inner_having", "no_source_data", "parse_failed"):
+                result["failure_type"] = inner_analysis["issue"]
+                result["likely_cause"] = inner_analysis.get("explanation", "")
+                result["data_availability"] = inner_analysis
+            else:
+                result["failure_type"] = "unknown"
+                result["likely_cause"] = (
+                    "All individual filters passed but CTE still returns 0 rows. "
+                    "Likely a combination of conditions or a data availability issue."
+                )
         except Exception as e:
             print(f"  ❌ Inner subquery analysis error: {e}")
-
-        result["failure_type"] = "unknown"
-        result["likely_cause"] = (
-            "All individual filters passed but CTE still returns 0 rows. "
-            "Likely a combination of conditions or a data availability issue."
-        )
+            result["failure_type"] = "unknown"
+            result["likely_cause"] = f"Inner subquery analysis error: {e}"
         results.append(result)
         _print_root_cause(cte_name, result)
+        if run_logger:
+            run_logger.section(f"ROOT CAUSE SUMMARY: {cte_name}")
+            run_logger.log(6, f"CTE: {cte_name}")
+            run_logger.log(6, f"Failure Type: {result.get('failure_type', 'unknown').upper()}")
+            if result.get("failure_condition"):
+                run_logger.log(6, f"Killer Condition: {result['failure_condition']}")
+            if result.get("condition_line_number"):
+                run_logger.log(6, f"Dataset Query Line: {result['condition_line_number']}")
+            if result.get("likely_cause"):
+                run_logger.log(6, f"Likely Cause: {result['likely_cause']}")
+            rb = result.get("rows_before")
+            ra = result.get("rows_after")
+            if rb is not None:
+                run_logger.log(6, f"Rows Before: {rb:,}")
+                run_logger.log(6, f"Rows After: {ra:,}")
+            da = result.get("data_availability", {})
+            if da:
+                if da.get("explanation"):
+                    run_logger.log(6, da["explanation"])
+                if da.get("rows_without_outer_where") is not None:
+                    run_logger.log(6, f"Rows without outer WHERE: {da['rows_without_outer_where']:,}")
+                if da.get("rows_without_inner_having") is not None:
+                    run_logger.log(6, f"Rows without inner HAVING: {da['rows_without_inner_having']:,}")
+                verification = da.get("verification")
+                if verification:
+                    run_logger.log(6, f"VERIFICATION: {verification.get('message', '')}")
+                if da.get("union_all_branch_counts"):
+                    run_logger.log(6, "UNION ALL branch row counts:")
+                    for b in da["union_all_branch_counts"]:
+                        status = "OK" if b["row_count"] > 0 else "EMPTY"
+                        run_logger.log(6, f"  Branch {b['branch_num']:2d} {status} {b['row_count']:>8,} FROM {b['from_table']}")
+            ha = result.get("having_analysis", [])
+            if ha:
+                run_logger.log(6, "HAVING ANALYSIS:")
+                for h in ha:
+                    flag = "KILLS ROWS" if h.get("kills_rows") else "OK"
+                    run_logger.log(6, f"  {flag} rows={h.get('rows_without_this_cond', 0):>8,} | {h.get('condition', '')[:80]}")
+            wa = result.get("where_analysis", [])
+            if wa:
+                run_logger.log(6, "WHERE ANALYSIS:")
+                for w in wa:
+                    flag = "KILLS ROWS" if w.get("kills_rows") else "OK"
+                    run_logger.log(6, f"  {flag} rows={w.get('rows_without_this_cond', 0):>8,} | {w.get('condition', '')[:80]}")
+            sug = result.get("threshold_suggestions", [])
+            if sug:
+                run_logger.log(6, "THRESHOLD SUGGESTIONS:")
+                for s in sug:
+                    run_logger.log(6, f"  Column: {s.get('column')} — {s.get('suggestion', '')[:100]}")
 
     return results
 
@@ -2889,6 +3435,9 @@ def _print_root_cause(cte_name: str, result: dict):
         print(f"  Rows after   : {ra:,}")
     if result.get("likely_cause"):
         print(f"  Likely cause : {result['likely_cause']}")
+    verification = result.get("verification")
+    if verification:
+        print(f"  Verification : {verification.get('message', '')}")
     ln = result.get("condition_line_number")
     if ln:
         print(f"  Dataset query line: {ln}")
