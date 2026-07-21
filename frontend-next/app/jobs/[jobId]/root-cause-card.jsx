@@ -93,6 +93,20 @@ function CteDiagnosisCard({ result, isPrimary }) {
               }}>
                 {result.failure_condition}
               </pre>
+              {result.resolved_condition && (
+                <div style={{ marginTop: 4 }}>
+                  <span style={{ fontSize: "0.68rem", color: "var(--text-muted)", display: "block", marginBottom: 2 }}>
+                    Resolved Table Names
+                  </span>
+                  <pre style={{
+                    fontFamily: "var(--font-mono)", fontSize: "0.7rem", whiteSpace: "pre-wrap",
+                    background: "rgba(16,185,129,0.06)", padding: 6, borderRadius: 4,
+                    border: "1px solid rgba(16,185,129,0.2)", color: "var(--success)",
+                  }}>
+                    {result.resolved_condition}
+                  </pre>
+                </div>
+              )}
             </div>
           )}
 

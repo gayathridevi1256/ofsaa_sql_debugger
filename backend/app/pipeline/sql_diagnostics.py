@@ -2348,6 +2348,30 @@ def _extract_alias_map(from_clause: str) -> dict[str, str]:
     return alias_map
 
 
+def _resolve_aliases(condition: str, sql: str) -> str | None:
+    """Replace table aliases in a condition with actual table names.
+
+    e.g. 't.BENEF_ACCT_ID = a.ACCT_INTRL_ID' → 'MI_TRXN.BENEF_ACCT_ID = STG_ACCOUNT.ACCT_INTRL_ID'
+    Returns None if no alias map could be built.
+    """
+    from_match = re.search(r'\bFROM\b\s+(.+?)(?:\bWHERE\b|\bGROUP\b|\bHAVING\b|\bORDER\b|$)', sql, re.IGNORECASE | re.DOTALL)
+    if not from_match:
+        return None
+    alias_map = _extract_alias_map(from_match.group(1))
+    if not alias_map:
+        return None
+
+    statements_above = re.search(r'\bfrom\b\s+(.+?)(?:\bWHERE\b|\bGROUP\b|\bHAVING\b|\bORDER\b|$)', sql, re.IGNORECASE | re.DOTALL)
+    def _replace_alias(match):
+        alias = match.group(1).lower()
+        col = match.group(2)
+        table = alias_map.get(alias, alias)
+        return f"{table}.{col}"
+
+    resolved = re.sub(r'\b(\w+)\.(\w+)', _replace_alias, condition, flags=re.IGNORECASE)
+    return resolved
+
+
 def _verify_killer_source(conn, killer_cond: str, base_from: str, metadata: dict) -> dict | None:
     """
     For a confirmed killer WHERE condition, looks up the source table and runs a
@@ -3868,6 +3892,21 @@ def run_granular_cte_diagnostics(
                 run_logger.log(6, "THRESHOLD SUGGESTIONS:")
                 for s in sug:
                     run_logger.log(6, f"  Column: {s.get('column')} — {s.get('suggestion', '')[:100]}")
+
+    # Resolve table aliases in failure_condition for human-readable display
+    cte_sql_map = {cte["name"].lower(): cte["sql"] for cte in ctes}
+    for r in results:
+        fc = r.get("failure_condition")
+        if not fc:
+            continue
+        # Try CTE-specific SQL first, fall back to first CTE or dataset query
+        cte_sql = cte_sql_map.get(r["cte_name"].lower()) or next(iter(cte_sql_map.values()), None)
+        if not cte_sql and dataset_query_sql:
+            cte_sql = dataset_query_sql
+        if cte_sql:
+            resolved = _resolve_aliases(fc, cte_sql)
+            if resolved and resolved != fc:
+                r["resolved_condition"] = resolved
 
     return results
 
