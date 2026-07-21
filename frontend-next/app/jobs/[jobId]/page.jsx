@@ -32,6 +32,7 @@ export default function JobPage() {
   const [diagnosticResults, setDiagnosticResults] = useState([]);
   const [cteResults, setCteResults] = useState([]);
   const [wsStatus, setWsStatus] = useState("connecting");
+  const [exporting, setExporting] = useState(false);
 
   // Load initial job data
   useEffect(() => {
@@ -94,6 +95,17 @@ export default function JobPage() {
     if (job && jobStatus !== "completed" && jobStatus !== "failed") connect();
   }, [job, jobStatus]);
 
+  const handleExportPdf = async () => {
+    setExporting(true);
+    try {
+      await jobsAPI.downloadReport(jobId);
+    } catch (e) {
+      alert("Failed to export PDF. Please try again.");
+    } finally {
+      setExporting(false);
+    }
+  };
+
   if (!job) return <div style={{ display: "flex", justifyContent: "center", padding: 80 }}><div className="spinner" /></div>;
 
   const isRunning = jobStatus !== "completed" && jobStatus !== "failed";
@@ -103,12 +115,24 @@ export default function JobPage() {
     <div className="page">
       <Navbar user={user} onLogout={logout} />
       <main className="page-content">
-        <div style={{ marginBottom: 24 }}>
-          <span style={{ fontSize: "1.1rem", fontWeight: 700 }}>{job.scenario_name || "Unknown"}</span>
-          <span style={{ marginLeft: 12, fontFamily: "var(--font-mono)", fontSize: "0.75rem", color: "var(--accent)" }}>
-            {job.job_id?.slice(0, 8)}…
-          </span>
-          {job.batch_date && <span style={{ marginLeft: 12, fontSize: "0.8rem", color: "var(--text-muted)" }}>{job.batch_date}</span>}
+        <div style={{ marginBottom: 24, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div>
+            <span style={{ fontSize: "1.1rem", fontWeight: 700 }}>{job.scenario_name || "Unknown"}</span>
+            <span style={{ marginLeft: 12, fontFamily: "var(--font-mono)", fontSize: "0.75rem", color: "var(--accent)" }}>
+              {job.job_id?.slice(0, 8)}…
+            </span>
+            {job.batch_date && <span style={{ marginLeft: 12, fontSize: "0.8rem", color: "var(--text-muted)" }}>{job.batch_date}</span>}
+          </div>
+          {jobStatus === "completed" && (
+            <div style={{ display: "flex", gap: 8 }}>
+              <button className="btn btn-secondary btn-sm" onClick={() => router.push("/dashboard")}>
+                🔍 Check New Log
+              </button>
+              <button className="btn btn-primary btn-sm" onClick={handleExportPdf} disabled={exporting}>
+                {exporting ? "Exporting…" : "📄 Export PDF"}
+              </button>
+            </div>
+          )}
         </div>
         <PipelineTracker steps={PIPELINE_STEPS} states={stepStates} outputs={stepOutputs} wsStatus={wsStatus} />
         {isRunning && (

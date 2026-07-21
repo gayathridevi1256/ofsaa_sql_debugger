@@ -37,6 +37,17 @@ export const jobsAPI = {
     api.post(`/jobs/${jobId}/rerun?force=${force}`).then((r) => r.data),
   batchRun: (filePaths) =>
     api.post("/jobs/batch", { file_paths: filePaths }).then((r) => r.data),
+  downloadReport: (jobId) =>
+    api.get(`/jobs/${jobId}/report`, { responseType: "blob" }).then((r) => {
+      const url = window.URL.createObjectURL(new Blob([r.data]));
+      const link = document.createElement("a");
+      link.href = url;
+      link.setAttribute("download", `report_${jobId.slice(0, 8)}.pdf`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    }),
 };
 
 export const adminAPI = {

@@ -16,6 +16,7 @@ OUTPUTS_DIR = APP_BASE_PATH / "outputs"
 LOGS_DIR = APP_BASE_PATH / "logs"
 DB_DIR = APP_BASE_PATH / "db"
 DB_PATH = DB_DIR / "scenario_debugger.db"
+PDF_REPORTS_DIR = APP_BASE_PATH / "pdf_reports"
 
 SECRET_KEY = os.getenv("SECRET_KEY", "CHANGE_ME_BEFORE_DEPLOYING_USE_SECRETS_TOKEN_HEX")
 JWT_ALGORITHM = "HS256"
@@ -41,7 +42,7 @@ LDAP_BIND_PASS = os.getenv("LDAP_BIND_PASSWORD", "")
 
 
 def create_app_directories():
-    dirs = [UPLOADS_DIR, OUTPUTS_DIR, LOGS_DIR, DB_DIR]
+    dirs = [UPLOADS_DIR, OUTPUTS_DIR, LOGS_DIR, DB_DIR, PDF_REPORTS_DIR]
     for d in dirs:
         d.mkdir(parents=True, exist_ok=True)
     return dirs

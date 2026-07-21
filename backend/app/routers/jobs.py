@@ -1,11 +1,13 @@
 """Job routes — run, batch, rerun, list, get."""
 
 from fastapi import APIRouter, Depends, Query, HTTPException, BackgroundTasks
+from fastapi.responses import Response
 
 from app.models.job import JobOut, RunResponse
 from app.models.batch import BatchRunRequest, BatchRunResponse
 from app.services.job_service import run_pipeline_job, run_batch_jobs, rerun_job, get_job_detail, get_job_list
 from app.services.auth_service import get_current_analyst
+from app.services.pdf_service import generate_job_report
 from app.websocket.manager import manager
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
@@ -48,3 +50,23 @@ def get_job(job_id: str, user: dict = Depends(get_current_analyst)):
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return JobOut(**job)
+
+
+@router.get("/{job_id}/report")
+def download_job_report(job_id: str, user: dict = Depends(get_current_analyst)):
+    job = get_job_detail(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    try:
+        pdf_bytes = generate_job_report(job_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"PDF generation failed: {e}")
+
+    filename = f"report_{job_id[:8]}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

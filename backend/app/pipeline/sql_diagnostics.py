@@ -14,6 +14,7 @@ Two failure categories are diagnosed and surfaced:
 
 import os
 import re
+import json
 import logging
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -126,13 +127,48 @@ def execute_full_sql(conn, sql: str, metadata: dict = None, run_logger=None, ste
         cursor.close()
 
 
+def _execute_for_verification(conn, sql: str, metadata: dict, run_logger, label: str) -> tuple:
+    """Execute verification SQL and return (count, error_message).
+    count = -1 on error, error_message = None on success.
+    """
+    if not sql or not sql.strip():
+        return 0, "Empty SQL"
+    if metadata:
+        business_date = metadata.get("current_business_date")
+        if business_date:
+            sql = re.sub(
+                r'@(?:current_business_date|batch_date|business_date)',
+                f"TO_DATE('{business_date}','YYYY-MM-DD')",
+                sql, flags=re.IGNORECASE
+            )
+    if run_logger:
+        run_logger.log_sql(6, label, sql)
+    cursor = conn.cursor()
+    try:
+        cursor.execute(sql)
+        results = cursor.fetchall()
+        count = len(results)
+        if run_logger:
+            status = "ALERTS GENERATED" if count > 0 else "NO ALERTS"
+            run_logger.log(6, f"VERIFICATION: {label} — {count:,} rows — {status}")
+        return count, None
+    except Exception as e:
+        logger.debug("verification SQL error: %s", e)
+        if run_logger:
+            run_logger.log(6, f"VERIFICATION: {label} — ERROR: {e}")
+        return -1, str(e)
+    finally:
+        cursor.close()
+
+
 def verify_killer_condition(
     conn, killer_condition: str, resolved_sql_file: str, metadata: dict,
     run_logger=None, output_dir: str = ""
 ) -> dict:
     """
-    Comments out the killer condition in the resolved function SQL,
+    Replaces the killer condition with '1=1' in the resolved function SQL,
     re-executes, and checks if alerts are generated.
+    Using '1=1' instead of commenting out keeps AND/OR connectors valid.
     """
     result = {"verified": False, "rows": 0, "message": ""}
 
@@ -144,63 +180,150 @@ def verify_killer_condition(
         full_sql = f.read()
 
     killer_stripped = killer_condition.strip()
+    modified_sql = None
 
+    # Strategy 1: exact match with leading whitespace (multiline)
     pattern = re.compile(r'^(\s*)' + re.escape(killer_stripped), re.MULTILINE)
     match = pattern.search(full_sql)
-
     if match:
         leading_ws = match.group(1)
-        replacement = f"{leading_ws}-- [DIAG COMMENTED OUT] {killer_stripped}"
-        commented_sql = pattern.sub(replacement, full_sql, count=1)
-    else:
+        modified_sql = pattern.sub(f"{leading_ws}1=1", full_sql, count=1)
+
+    # Strategy 2: linearized whitespace-insensitive match
+    if modified_sql is None:
         flex_pattern = r'\s*'.join(re.escape(p) for p in killer_stripped.split())
         flex_re = re.compile(flex_pattern, re.IGNORECASE | re.DOTALL)
         match = flex_re.search(full_sql)
         if match:
-            commented_sql = full_sql[:match.start()] + f"-- [DIAG COMMENTED OUT] {killer_stripped}" + full_sql[match.end():]
-        else:
-            commented_sql = full_sql.replace(killer_stripped, f"-- [DIAG COMMENTED OUT] {killer_stripped}")
+            modified_sql = full_sql[:match.start()] + "1=1" + full_sql[match.end():]
 
-    if commented_sql == full_sql:
+    # Strategy 3: plain replace (single occurrence)
+    if modified_sql is None:
+        if killer_stripped in full_sql:
+            modified_sql = full_sql.replace(killer_stripped, "1=1", 1)
+
+    # Strategy 4: multiline DOTALL exact
+    if modified_sql is None:
         lines = killer_stripped.split("\n")
         if len(lines) > 1:
             pattern = re.compile(re.escape(killer_stripped), re.DOTALL)
-            commented_sql = pattern.sub(f"-- [DIAG COMMENTED OUT]\n{killer_stripped}", full_sql, count=1)
+            if pattern.search(full_sql):
+                modified_sql = pattern.sub("1=1", full_sql, count=1)
 
-    if commented_sql == full_sql:
+    # Strategy 5: normalized match — handle "NOT col IS NULL" vs "col IS NOT NULL"
+    # and other common semantic equivalences
+    if modified_sql is None:
+        normalized_killer = re.sub(
+            r'\bNOT\s+(\S+)\s+IS\s+NULL\b', r'\1 IS NOT NULL',
+            killer_stripped, flags=re.IGNORECASE
+        )
+        if normalized_killer != killer_stripped:
+            # Try the normalized version with linear whitespace matching
+            flex_pattern = r'\s*'.join(re.escape(p) for p in normalized_killer.split())
+            flex_re = re.compile(flex_pattern, re.IGNORECASE | re.DOTALL)
+            match = flex_re.search(full_sql)
+            if match:
+                modified_sql = full_sql[:match.start()] + "1=1" + full_sql[match.end():]
+
+    if modified_sql is None or modified_sql == full_sql:
         result["message"] = f"Could not find killer condition in resolved SQL: {killer_stripped[:80]}..."
         return result
 
     if run_logger:
-        run_logger.log(6, f"VERIFICATION: Commenting out killer condition:")
-        run_logger.log(6, f"  -- {killer_stripped[:120]}...")
+        run_logger.log(6, f"VERIFICATION: Replacing killer condition with 1=1:")
+        run_logger.log(6, f"  {killer_stripped[:120]}...  →  1=1")
 
-    count = execute_full_sql(
-        conn, commented_sql, metadata, run_logger=run_logger,
-        step=6, label="verify_killer_commented_out"
+    count, error = _execute_for_verification(
+        conn, modified_sql, metadata, run_logger, "verify_killer_replaced"
     )
+
+    if error:
+        result["error"] = error
+        result["message"] = f"❌ SQL ERROR during verification: {error}"
+        return result
 
     result["verified"] = count > 0
     result["rows"] = count
     if count > 0:
-        result["message"] = f"✅ ALERTS GENERATED — {count:,} rows returned with condition commented out"
+        result["message"] = f"✅ ALERTS GENERATED — {count:,} rows returned with killer condition replaced by 1=1"
     else:
-        result["message"] = f"❌ Still NO ALERTS — 0 rows even with condition commented out"
+        result["message"] = f"❌ Still NO ALERTS — 0 rows even with killer condition replaced by 1=1"
 
     return result
 
 
+def _replace_cte_where_clause(full_sql: str, cte_name: str) -> tuple:
+    """
+    Finds the CTE by name in the resolved SQL and replaces its top-level
+    WHERE clause with 'WHERE 1=1'.
+    Returns (modified_sql, error_message). modified_sql is None on failure.
+    """
+    # Find the CTE definition: CTE_NAME as (  or  CTE_NAME AS (
+    # Allow optional comments between 'as' and '(' (common in OFSAA SQL)
+    pattern = re.compile(
+        r'\b' + re.escape(cte_name) + r'\s+as\s+(?:--[^\n]*\n\s*)*\(',
+        re.IGNORECASE
+    )
+    match = pattern.search(full_sql)
+    if not match:
+        return None, f"Could not find CTE '{cte_name}' in resolved SQL"
+
+    open_paren_pos = match.end() - 1  # position of '('
+
+    # Find the matching closing paren
+    depth = 0
+    close_paren_pos = -1
+    for i in range(open_paren_pos, len(full_sql)):
+        ch = full_sql[i]
+        if ch == '(':
+            depth += 1
+        elif ch == ')':
+            depth -= 1
+            if depth == 0:
+                close_paren_pos = i
+                break
+    if close_paren_pos == -1:
+        return None, f"Could not find closing paren for CTE '{cte_name}'"
+
+    cte_body = full_sql[open_paren_pos + 1:close_paren_pos]
+
+    # Find the top-level WHERE in the CTE body (depth 0 relative to CTE body)
+    where_pos = _find_top_level_clause("WHERE", cte_body)
+    if where_pos == -1:
+        return None, f"CTE '{cte_name}' has no top-level WHERE clause"
+
+    # Find where the WHERE clause ends:
+    # at GROUP BY, HAVING, ORDER BY, WINDOW, QUALIFY, or end of CTE body
+    end_candidates = []
+    for kw in ["GROUP BY", "HAVING", "ORDER BY", "WINDOW", "QUALIFY"]:
+        p = _find_top_level_clause(kw, cte_body)
+        if p != -1 and p > where_pos:
+            end_candidates.append(p)
+    where_end = min(end_candidates) if end_candidates else len(cte_body)
+
+    # Replace the WHERE clause with WHERE 1=1
+    new_cte_body = cte_body[:where_pos] + "WHERE 1=1\n" + cte_body[where_end:]
+
+    # Reconstruct the full SQL
+    new_sql = full_sql[:open_paren_pos + 1] + new_cte_body + full_sql[close_paren_pos:]
+    return new_sql, ""
+
+
 def _verify_where_combination(
     conn, resolved_sql_file: str, where_conditions: list[str],
-    metadata: dict, run_logger=None
+    metadata: dict, run_logger=None, cte_name: str = ""
 ) -> dict:
     """
-    Comments out ALL outer WHERE conditions in the resolved function SQL
-    and re-executes to verify alerts would be generated when the WHERE
-    combination is removed.
+    Replaces the CTE's entire WHERE clause with 'WHERE 1=1' in the resolved
+    function SQL and re-executes to verify alerts would be generated when
+    the WHERE combination is removed.
+    Uses CTE-name-based WHERE clause replacement to avoid malformed SQL
+    (dangling AND/OR, partial multi-line comments) that occurred with the
+    previous per-condition comment-out approach.
     """
+    total = len(where_conditions)
     result = {"verified": False, "rows": 0, "message": "",
-              "conditions_commented": 0, "conditions_total": len(where_conditions)}
+              "conditions_commented": 0, "conditions_total": total}
 
     if not os.path.exists(resolved_sql_file):
         result["message"] = f"Resolved SQL file not found: {resolved_sql_file}"
@@ -210,109 +333,43 @@ def _verify_where_combination(
         result["message"] = "No WHERE conditions provided to verify"
         return result
 
+    if not cte_name:
+        result["message"] = "No CTE name provided for WHERE clause replacement"
+        return result
+
     with open(resolved_sql_file, "r", encoding="utf-8") as f:
         full_sql = f.read()
 
-    commented_sql = full_sql
-    commented_count = 0
+    modified_sql, err = _replace_cte_where_clause(full_sql, cte_name)
 
-    def _strip_comments_from_cond(cond_text: str) -> str:
-        cond_text = re.sub(r'/\*.*?\*/', '', cond_text, flags=re.DOTALL)
-        cond_text = re.sub(r'--[^\n]*', '', cond_text)
-        return cond_text.strip()
-
-    for cond in where_conditions:
-        cond_stripped = _strip_comments_from_cond(cond.strip())
-        if not cond_stripped:
-            continue
-        cond_linear = " ".join(cond_stripped.split())
-
-        matched = False
-
-        for strategy, matcher in [
-            ("exact_multiline", lambda: _try_exact_multiline(commented_sql, cond_stripped)),
-            ("linear_whitespace", lambda: _try_linear_whitespace(commented_sql, cond_linear)),
-            ("core_first_60", lambda: _try_first_n_chars(commented_sql, cond_stripped, 60)),
-            ("substring", lambda: _try_substring(commented_sql, cond_stripped)),
-        ]:
-            try:
-                res = matcher()
-                if res is not None:
-                    commented_sql = res
-                    matched = True
-                    break
-            except Exception:
-                continue
-
-        if matched:
-            commented_count += 1
-        elif run_logger:
-            run_logger.log(6, f"VERIFICATION: Could not match condition in resolved SQL: {cond_stripped[:80]}...")
-
-    result["conditions_commented"] = commented_count
-
-    if run_logger:
-        run_logger.log(6, f"VERIFICATION: Commented out {commented_count}/{len(where_conditions)} WHERE conditions in resolved SQL")
-
-    if commented_count == 0:
-        result["message"] = f"Could not find any of the {len(where_conditions)} WHERE conditions in resolved SQL — manual verification needed"
+    if modified_sql is None:
+        result["message"] = f"Could not replace WHERE clause: {err}"
+        if run_logger:
+            run_logger.log(6, f"VERIFICATION: {err}")
         return result
 
-    count = execute_full_sql(
-        conn, commented_sql, metadata, run_logger=run_logger,
-        step=6, label="verify_where_combination"
+    result["conditions_commented"] = total  # entire WHERE replaced
+
+    if run_logger:
+        run_logger.log(6, f"VERIFICATION: Replaced entire WHERE clause of CTE '{cte_name}' with WHERE 1=1 ({total} conditions removed)")
+
+    count, error = _execute_for_verification(
+        conn, modified_sql, metadata, run_logger, "verify_where_combination"
     )
+
+    if error:
+        result["error"] = error
+        result["message"] = f"❌ SQL ERROR during verification: {error}"
+        return result
 
     result["verified"] = count > 0
     result["rows"] = count
     if count > 0:
-        result["message"] = f"✅ ALERTS GENERATED — {count:,} rows returned with {commented_count}/{len(where_conditions)} WHERE conditions commented out"
+        result["message"] = f"✅ ALERTS GENERATED — {count:,} rows returned with WHERE clause replaced by 1=1"
     else:
-        result["message"] = f"❌ Still NO ALERTS — 0 rows even with {commented_count}/{len(where_conditions)} WHERE conditions commented out"
+        result["message"] = f"❌ Still NO ALERTS — 0 rows even with WHERE clause replaced by 1=1"
 
     return result
-
-
-def _try_exact_multiline(sql: str, cond: str):
-    """Match condition on its own line (with leading whitespace)."""
-    pattern = re.compile(r'^(\s*)' + re.escape(cond), re.MULTILINE)
-    match = pattern.search(sql)
-    if match:
-        leading_ws = match.group(1)
-        replacement = f"{leading_ws}-- [DIAG COMMENTED OUT] {cond}"
-        return pattern.sub(replacement, sql, count=1)
-    return None
-
-
-def _try_linear_whitespace(sql: str, cond_linear: str):
-    """Match condition ignoring all whitespace differences."""
-    flex_pattern = r'\s*'.join(re.escape(p) for p in cond_linear.split())
-    flex_re = re.compile(flex_pattern, re.IGNORECASE | re.DOTALL)
-    match = flex_re.search(sql)
-    if match:
-        return sql[:match.start()] + f"-- [DIAG COMMENTED OUT] {cond_linear[:120]}" + sql[match.end():]
-    return None
-
-
-def _try_first_n_chars(sql: str, cond: str, n: int):
-    """Match on the first N characters of the condition (ignoring trailing subquery/whitespace)."""
-    core = cond[:n].rstrip()
-    if len(core) < 20:
-        return None
-    # Try flex whitespace on the core
-    flex_pattern = r'\s*'.join(re.escape(p) for p in core.split())
-    flex_re = re.compile(flex_pattern, re.IGNORECASE | re.DOTALL)
-    match = flex_re.search(sql)
-    if match:
-        return sql[:match.start()] + f"-- [DIAG COMMENTED OUT] {core}..." + sql[match.end():]
-    return None
-
-
-def _try_substring(sql: str, cond: str):
-    """Fallback: simple substring replacement (single occurrence only)."""
-    if cond in sql and sql.count(cond) == 1:
-        return sql.replace(cond, f"-- [DIAG COMMENTED OUT] {cond}")
-    return None
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1741,10 +1798,223 @@ def _probe_source_views(conn, sql: str, metadata: dict) -> list[dict]:
     return results
 
 
+def _investigate_deeper_failure(
+    conn, resolved_sql_file: str, fixed_cte_name: str, metadata: dict,
+    run_logger=None
+) -> dict:
+    """
+    Called when replacing a CTE's WHERE clause with 1=1 still produces 0 alerts.
+    Investigates the final query (the outer SELECT after the WITH clause) to
+    find which WHERE/HAVING condition in the final query is killing rows.
+
+    Returns a dict with:
+      - explanation: human-readable finding
+      - failure_condition: the specific condition that kills rows (or None)
+      - condition_line_number: line number in the dataset query (or None)
+    """
+    result = {"explanation": "", "failure_condition": None, "condition_line_number": None}
+
+    if not os.path.exists(resolved_sql_file):
+        result["explanation"] = "Could not load resolved SQL for deeper investigation."
+        return result
+
+    with open(resolved_sql_file, "r", encoding="utf-8") as f:
+        full_sql = f.read()
+
+    # Step 1: Create modified SQL with the fixed CTE's WHERE replaced
+    modified_sql, err = _replace_cte_where_clause(full_sql, fixed_cte_name)
+    if modified_sql is None:
+        result["explanation"] = f"Could not replace WHERE clause: {err}"
+        return result
+
+    if run_logger:
+        run_logger.log(6, f"DEEPER INVESTIGATION: Replaced CTE '{fixed_cte_name}' WHERE with 1=1, now diagnosing the final query...")
+
+    # Step 2: Extract the final query — the part AFTER the WITH clause
+    final_query_sql = _extract_final_query_from_with_clause(modified_sql)
+
+    if not final_query_sql:
+        # Try loading from parsed_ctes/final_query.sql (saved by CTE parser step)
+        output_dir_path = os.path.dirname(os.path.dirname(resolved_sql_file))
+        final_query_file = os.path.join(output_dir_path, "parsed_ctes", "final_query.sql")
+        if os.path.exists(final_query_file):
+            with open(final_query_file, "r", encoding="utf-8") as f:
+                final_query_sql = f.read()
+            if run_logger:
+                run_logger.log(6, f"DEEPER INVESTIGATION: Loaded final query from parsed_ctes/final_query.sql ({len(final_query_sql)} chars)")
+        else:
+            # If no final_query.sql, the entire SQL is the final query
+            final_query_sql = modified_sql
+            if run_logger:
+                run_logger.log(6, f"DEEPER INVESTIGATION: No final_query.sql found, using full SQL ({len(final_query_sql)} chars)")
+
+    if run_logger and final_query_sql:
+        run_logger.log(6, f"DEEPER INVESTIGATION: Final query ready ({len(final_query_sql)} chars)")
+
+    # Step 3: Diagnose the final query's WHERE conditions
+    try:
+        parsed = parse_sql_structure(final_query_sql)
+    except Exception as e:
+        result["explanation"] = f"Could not parse final query structure: {e}"
+        return result
+
+    where_conditions = parsed.get("where_conditions", [])
+    having_conditions = parsed.get("having_conditions", [])
+    base_sql = parsed.get("from_with_joins_and_group") or parsed.get("from_with_joins", "")
+
+    if not base_sql:
+        result["explanation"] = "Could not extract base SQL from final query."
+        return result
+
+    # Check WHERE conditions — remove one at a time to find the killer
+    if where_conditions and len(where_conditions) > 0:
+        if run_logger:
+            run_logger.log(6, f"DEEPER INVESTIGATION: Testing {len(where_conditions)} WHERE conditions in final query...")
+
+        for i, cond in enumerate(where_conditions):
+            remaining = [c for j, c in enumerate(where_conditions) if j != i]
+            if remaining:
+                test_sql = base_sql + "\nWHERE " + "\n  AND ".join(remaining)
+            else:
+                test_sql = base_sql
+            cur = execute_count(conn, test_sql, metadata, run_logger=run_logger, step=6, label=f"deeper_where_remove_cond_{i}")
+
+            if cur > 0:
+                # Found the killer condition!
+                cond_stripped = cond.strip()
+                result["failure_condition"] = cond_stripped
+                result["explanation"] = (
+                    f"Final query WHERE condition '{cond_stripped[:100]}' eliminates all rows "
+                    f"(removing it restores {cur:,} rows). "
+                    f"This is an ADDITIONAL issue beyond CTE '{fixed_cte_name}'."
+                )
+
+                # Find the line number in the resolved SQL
+                line_num = _find_condition_line_in_sql(cond_stripped, full_sql)
+                if line_num:
+                    result["condition_line_number"] = line_num
+
+                if run_logger:
+                    run_logger.log(6, f"DEEPER INVESTIGATION: FOUND killer WHERE condition: {cond_stripped[:80]}...")
+                    if line_num:
+                        run_logger.log(6, f"DEEPER INVESTIGATION: Line number: {line_num}")
+
+                return result
+
+    # Check HAVING conditions — add one at a time to find the killer
+    if having_conditions and len(having_conditions) > 0:
+        if run_logger:
+            run_logger.log(6, f"DEEPER INVESTIGATION: Testing {len(having_conditions)} HAVING conditions in final query...")
+
+        before_having = parsed.get("before_having", final_query_sql)
+        prev_count = execute_count(conn, before_having, metadata, run_logger=run_logger, step=6, label="deeper_having_before")
+
+        having_so_far = ""
+        for i, cond in enumerate(having_conditions):
+            having_so_far += ("\nHAVING " if i == 0 else "\n  AND ") + cond
+            test_sql = before_having + having_so_far
+            cur = execute_count(conn, test_sql, metadata, run_logger=run_logger, step=6, label=f"deeper_having_add_cond_{i}")
+
+            if prev_count > 0 and cur == 0:
+                cond_stripped = cond.strip()
+                result["failure_condition"] = cond_stripped
+                result["explanation"] = (
+                    f"Final query HAVING condition '{cond_stripped[:100]}' eliminates all rows "
+                    f"({prev_count:,} → 0). "
+                    f"This is an ADDITIONAL issue beyond CTE '{fixed_cte_name}'."
+                )
+
+                line_num = _find_condition_line_in_sql(cond_stripped, full_sql)
+                if line_num:
+                    result["condition_line_number"] = line_num
+
+                if run_logger:
+                    run_logger.log(6, f"DEEPER INVESTIGATION: FOUND killer HAVING condition: {cond_stripped[:80]}...")
+                    if line_num:
+                        run_logger.log(6, f"DEEPER INVESTIGATION: Line number: {line_num}")
+
+                return result
+
+            prev_count = cur
+
+    # No single condition found — check if the final query has a UNION ALL with empty branches
+    union_branches = _probe_union_all_branches(conn, final_query_sql, metadata, run_logger=run_logger)
+    if union_branches:
+        empty_branches = [b for b in union_branches if b.get("row_count", 0) == 0]
+        if empty_branches and all(b.get("row_count", 0) == 0 for b in union_branches):
+            # All branches empty — no data in any source
+            result["explanation"] = (
+                f"All {len(union_branches)} UNION ALL branches in the final query return 0 rows. "
+                f"The source tables may be empty for the current batch date."
+            )
+            result["union_branches"] = union_branches
+            return result
+
+    result["explanation"] = (
+        "No single WHERE or HAVING condition in the final query is the killer. "
+        "The issue may be a combination of conditions or a data availability problem."
+    )
+    return result
+
+
+def _extract_final_query_from_with_clause(sql: str) -> str:
+    """
+    Extracts the final query from a 'WITH ... AS (...), ... <final_query>' SQL.
+    Returns the final query SQL (everything after the last CTE definition).
+    If there's no WITH clause, returns empty string.
+    """
+    # Strip block comments and leading line comments
+    clean = re.sub(r'/\*.*?\*/', '', sql, flags=re.DOTALL)
+    lines = clean.split('\n')
+    first_real = 0
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped and not stripped.startswith('--'):
+            first_real = i
+            break
+    clean = '\n'.join(lines[first_real:]).strip()
+
+    # Check if it starts with WITH
+    with_match = re.match(r'\s*WITH\b', clean, re.IGNORECASE)
+    if not with_match:
+        return ""
+
+    # Find the end of the WITH clause — track paren depth to find the last
+    # top-level closing paren of the last CTE definition
+    depth = 0
+    last_cte_close = -1
+    i = with_match.end()
+
+    while i < len(clean):
+        ch = clean[i]
+        if ch == '(':
+            depth += 1
+        elif ch == ')':
+            depth -= 1
+            if depth == 0:
+                last_cte_close = i
+        i += 1
+
+    if last_cte_close == -1:
+        return ""
+
+    # Everything after the last CTE's closing paren is the final query
+    final_query = clean[last_cte_close + 1:].strip()
+
+    # If the final query is very short (< 50 chars), it's likely not a real
+    # final query — the SQL probably ends with the WITH clause and the final
+    # query is a separate file. Return empty to signal that.
+    if len(final_query) < 50:
+        return ""
+
+    return final_query
+
+
 def _analyze_inner_subquery(
     conn, sql: str, metadata: dict, threshold_bindings: dict,
     threshold_config: dict = None, param_mapping: dict = None,
-    run_logger=None, output_dir: str = ""
+    run_logger=None, output_dir: str = "", cte_name: str = "",
+    dataset_query_raw: str = None
 ) -> dict:
     """
     Called for UNKNOWN cases.  Tries multiple strategies to explain why the CTE
@@ -1777,8 +2047,29 @@ def _analyze_inner_subquery(
             "No single WHERE condition eliminates rows on its own, but the combined "
             "threshold conditions are too restrictive."
         )
-        # Collect actual data distributions for each numeric threshold column
+
+        # Find line numbers of each WHERE condition in the dataset query
         where_conds = parsed.get("where_conditions", [])
+        findings["where_conditions"] = where_conds
+
+        condition_lines: list[dict] = []
+        for cond in where_conds:
+            cond_stripped = cond.strip()
+            line_num = None
+            if dataset_query_raw:
+                line_num = _find_condition_line_in_sql(cond_stripped, dataset_query_raw)
+            condition_lines.append({
+                "condition": cond_stripped,
+                "line_number": line_num,
+            })
+        if condition_lines:
+            findings["where_condition_lines"] = condition_lines
+            # Report the first condition's line as the primary line number
+            first_line = condition_lines[0].get("line_number")
+            if first_line:
+                findings["first_condition_line"] = first_line
+
+        # Collect actual data distributions for each numeric threshold column
         stats_list: list[dict] = []
         seen_cols: set[str] = set()
         for cond in where_conds:
@@ -1793,8 +2084,7 @@ def _analyze_inner_subquery(
         if stats_list:
             findings["column_stats"] = stats_list
 
-        # VERIFICATION: Comment out ALL outer WHERE conditions in the resolved SQL
-        findings["where_conditions"] = parsed.get("where_conditions", [])
+        # VERIFICATION: Replace the CTE's WHERE clause with WHERE 1=1 in resolved SQL
         if output_dir:
             extracted_dir = os.path.join(output_dir, "extracted_queries")
             if os.path.isdir(extracted_dir):
@@ -1807,27 +2097,48 @@ def _analyze_inner_subquery(
                     resolved_sql_file = max(dataset_files, key=os.path.getmtime)
                     verification = _verify_where_combination(
                         conn, resolved_sql_file, findings["where_conditions"],
-                        metadata, run_logger=run_logger
+                        metadata, run_logger=run_logger, cte_name=cte_name
                     )
                     findings["verification"] = verification
-                    if verification.get("verified"):
+                    if verification.get("error"):
+                        findings["explanation"] = (
+                            f"Inner query returns {base_count:,} rows before outer WHERE, "
+                            f"but verification SQL failed with error: {verification['error']}. "
+                            f"The combined WHERE conditions are likely the root cause."
+                        )
+                    elif verification.get("verified"):
                         findings["explanation"] = (
                             f"VERIFIED: Inner query returns {base_count:,} rows before outer WHERE. "
-                            f"Commenting out {verification.get('conditions_commented', 0)}/{verification.get('conditions_total', 0)} "
-                            f"outer WHERE conditions generates {verification['rows']:,} alerts. "
+                            f"Replacing WHERE clause with 1=1 generates {verification['rows']:,} alerts. "
                             f"The combined WHERE conditions are the root cause."
                         )
                     elif verification.get("conditions_commented", 0) > 0:
-                        findings["explanation"] = (
-                            f"Inner query returns {base_count:,} rows before outer WHERE. "
-                            f"Commented out {verification.get('conditions_commented', 0)}/{verification.get('conditions_total', 0)} WHERE conditions "
-                            f"but still 0 alerts — deeper issue likely "
-                            f"(check HAVING, JOINs, or data availability within the inner subquery)."
+                        # Verification ran but still 0 alerts — INVESTIGATE deeper
+                        deeper = _investigate_deeper_failure(
+                            conn, resolved_sql_file, cte_name, metadata,
+                            run_logger=run_logger
                         )
+                        if deeper:
+                            findings["deeper_investigation"] = deeper
+                            findings["explanation"] = (
+                                f"Inner query returns {base_count:,} rows before outer WHERE. "
+                                f"Replacing CTE '{cte_name}' WHERE with 1=1 still produces 0 alerts. "
+                                f"Deeper investigation found: {deeper.get('explanation', '')}"
+                            )
+                            if deeper.get("failure_condition"):
+                                findings["deeper_failure_condition"] = deeper["failure_condition"]
+                            if deeper.get("condition_line_number"):
+                                findings["deeper_condition_line"] = deeper["condition_line_number"]
+                        else:
+                            findings["explanation"] = (
+                                f"Inner query returns {base_count:,} rows before outer WHERE. "
+                                f"Replaced WHERE clause with 1=1 but still 0 alerts — "
+                                f"check the final query or other CTEs for additional filtering."
+                            )
                     else:
                         findings["explanation"] = (
                             f"Inner query returns {base_count:,} rows before outer WHERE. "
-                            f"Could not match WHERE conditions in resolved SQL for verification. "
+                            f"Could not replace WHERE clause in resolved SQL for verification. "
                             f"Manually comment out WHERE conditions to confirm root cause."
                         )
         return findings
@@ -2999,6 +3310,70 @@ def diagnose_inner_query_sequence(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# CTE TOPOLOGICAL SORT (dependency-ordered diagnosis)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _topological_sort_ctes(ctes: list[dict], cte_dependencies: dict, run_logger=None) -> list[dict]:
+    """
+    Sort CTEs so that dependencies are diagnosed before dependents.
+    Uses Kahn's algorithm. Only considers edges where BOTH CTEs are in the
+    input list (the empty CTEs to diagnose). CTEs whose dependencies are
+    healthy (not in the empty set) are treated as having in_degree=0.
+
+    Falls back to original order on circular dependencies.
+    """
+    if not ctes:
+        return ctes
+
+    empty_names_lower = {cte["name"].lower() for cte in ctes}
+    # Map lowercase name → cte dict for quick lookup
+    cte_by_lower = {cte["name"].lower(): cte for cte in ctes}
+
+    # Build in-degree map and adjacency list
+    in_degree = {}   # lowercase cte name → count of empty dependencies
+    graph = {}       # lowercase dep name → [dependent lowercase names]
+
+    for cte in ctes:
+        name_lower = cte["name"].lower()
+        deps = cte_dependencies.get(cte["name"], []) or cte_dependencies.get(name_lower, [])
+        # Only count deps that are ALSO in the empty set
+        empty_deps = [d.lower() for d in deps if d.lower() in empty_names_lower]
+        in_degree[name_lower] = len(empty_deps)
+        for d in empty_deps:
+            graph.setdefault(d, []).append(name_lower)
+
+    # Start with CTEs that have no empty dependencies (independent CTEs)
+    queue = [name for name, deg in in_degree.items() if deg == 0]
+    sorted_lower = []
+
+    while queue:
+        # Pop first (preserve original order for ties)
+        current = queue.pop(0)
+        sorted_lower.append(current)
+        for dependent in graph.get(current, []):
+            in_degree[dependent] -= 1
+            if in_degree[dependent] == 0:
+                queue.append(dependent)
+
+    # Any CTEs not sorted → circular dependency → append in original order
+    remaining = [cte["name"].lower() for cte in ctes if cte["name"].lower() not in set(sorted_lower)]
+    sorted_lower.extend(remaining)
+
+    # Convert back to cte dicts in sorted order
+    sorted_ctes = [cte_by_lower[name] for name in sorted_lower if name in cte_by_lower]
+
+    if run_logger and len(ctes) > 1:
+        original_order = [cte["name"] for cte in ctes]
+        sorted_order = [cte["name"] for cte in sorted_ctes]
+        if original_order != sorted_order:
+            run_logger.log(6, f"CTE diagnosis order (topological): {sorted_order}")
+        else:
+            run_logger.log(6, f"CTE diagnosis order (unchanged): {sorted_order}")
+
+    return sorted_ctes
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # MAIN DIAGNOSTIC RUNNER
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -3061,9 +3436,72 @@ def run_granular_cte_diagnostics(
 
     results = []
 
+    # Load CTE dependencies for dependency-aware diagnosis.
+    # When a CTE depends on another CTE that already failed, we skip its deep
+    # diagnosis and report "upstream_dependency" instead of "no_source_data".
+    cte_dependencies: dict = {}
+    if output_dir:
+        dep_file = os.path.join(output_dir, "parsed_ctes", "dependencies.json")
+        if os.path.exists(dep_file):
+            try:
+                with open(dep_file, "r", encoding="utf-8") as f:
+                    cte_dependencies = json.load(f)
+                if run_logger:
+                    run_logger.log(6, f"Loaded CTE dependencies from {dep_file}")
+            except Exception as e:
+                logger.debug("Could not load dependencies.json: %s", e)
+
+    failed_cte_names: set[str] = set()  # lowercase names of CTEs diagnosed as failed
+
+    # ── Topological sort: diagnose dependencies before dependents ──
+    # Independent CTEs all get full diagnosis.
+    # Dependent CTEs are only diagnosed after their dependencies (and skipped
+    # if the dependency already failed).
+    ctes = _topological_sort_ctes(ctes, cte_dependencies, run_logger=run_logger)
+
     for cte in ctes:
         cte_name = cte["name"]
         sql      = cte["sql"]
+        cte_name_lower = cte_name.lower()
+
+        # Rebuild failed CTE set from results so far (robust against continue/break)
+        failed_cte_names = {
+            r["cte_name"].lower() for r in results
+            if r.get("failure_type") and r.get("failure_type") not in (None, "healthy")
+        }
+
+        # ── Dependency-aware skip ──
+        # If any CTE this one depends on already failed, skip deep diagnosis.
+        deps = cte_dependencies.get(cte_name, [])
+        failed_deps = [d for d in (deps or []) if d in failed_cte_names]
+        if failed_deps:
+            upstream = failed_deps[0]
+            if run_logger:
+                run_logger.section(f"DIAGNOSING CTE: {cte_name}")
+                run_logger.log(6, f"Skipping deep diagnosis — upstream CTE '{upstream}' already failed")
+            else:
+                print("\n" + "=" * 100)
+                print(f"  DIAGNOSING CTE: {cte_name}")
+                print("=" * 100)
+                print(f"  ⏭  Skipping — upstream CTE '{upstream}' already failed")
+            result = {
+                "cte_name":             cte_name,
+                "failure_type":         "upstream_dependency",
+                "failure_condition":    None,
+                "rows_before":          None,
+                "rows_after":           None,
+                "likely_cause":         (
+                    f"CTE '{cte_name}' is empty because upstream CTE '{upstream}' returned 0 rows. "
+                    f"Fix '{upstream}' first — this CTE will be resolved automatically."
+                ),
+                "upstream_cte":         upstream,
+                "failed_dependencies":  failed_deps,
+                "threshold_suggestions": [],
+                "data_availability":    {},
+            }
+            results.append(result)
+            _print_root_cause(cte_name, result)
+            continue
 
         if run_logger:
             run_logger.section(f"DIAGNOSING CTE: {cte_name}")
@@ -3292,7 +3730,8 @@ def run_granular_cte_diagnostics(
             inner_analysis = _analyze_inner_subquery(
                 conn, sql, metadata, threshold_bindings, threshold_config,
                 param_mapping=param_mapping, run_logger=run_logger,
-                output_dir=output_dir
+                output_dir=output_dir, cte_name=cte_name,
+                dataset_query_raw=dataset_query_raw
             )
             result["data_availability"] = inner_analysis
 
@@ -3312,32 +3751,56 @@ def run_granular_cte_diagnostics(
             elif inner_analysis.get("issue") == "where_combination":
                 result["failure_type"] = "where_combination"
                 verification = inner_analysis.get("verification")
-                if isinstance(verification, dict) and verification.get("verified"):
+                rows_before = inner_analysis.get("rows_without_outer_where", 0)
+
+                # Set WHERE condition line numbers from the findings
+                where_cond_lines = inner_analysis.get("where_condition_lines", [])
+                if where_cond_lines:
+                    result["where_condition_lines"] = where_cond_lines
+                    first_line = inner_analysis.get("first_condition_line")
+                    if first_line:
+                        result["condition_line_number"] = first_line
+                    # Set the first condition as the failure_condition for display
+                    first_cond = where_cond_lines[0].get("condition", "")
+                    if first_cond:
+                        result["failure_condition"] = first_cond
+
+                if isinstance(verification, dict):
                     result["verification"] = verification
-                    result["likely_cause"] = (
-                        f"VERIFIED: Inner query returns {inner_analysis.get('rows_without_outer_where', 0):,} rows "
-                        f"before outer WHERE. Commenting out all {verification.get('conditions_commented', 0)}/{verification.get('conditions_total', len(inner_analysis.get('where_conditions', [])))} "
-                        f"outer WHERE conditions generates {verification['rows']:,} alerts. "
-                        f"The combined WHERE conditions are the root cause."
-                    )
-                elif isinstance(verification, dict):
-                    result["verification"] = verification
-                    rows_before = inner_analysis.get("rows_without_outer_where", 0)
-                    if verification.get("conditions_commented", 0) == 0:
+                    if verification.get("error"):
+                        result["likely_cause"] = (
+                            f"Inner query returns {rows_before:,} rows before outer WHERE, "
+                            f"but verification SQL failed: {verification['error']}. "
+                            f"The combined WHERE conditions are the likely root cause."
+                        )
+                    elif verification.get("verified"):
+                        result["likely_cause"] = (
+                            f"VERIFIED: Inner query returns {rows_before:,} rows before outer WHERE. "
+                            f"Replacing WHERE clause with 1=1 generates {verification['rows']:,} alerts. "
+                            f"The combined WHERE conditions are the root cause."
+                        )
+                    elif verification.get("conditions_commented", 0) > 0:
+                        # Deeper investigation was done — use its real results
+                        deeper = inner_analysis.get("deeper_investigation", {})
+                        if deeper and deeper.get("failure_condition"):
+                            result["likely_cause"] = deeper.get("explanation", "")
+                            result["failure_condition"] = deeper["failure_condition"]
+                            if deeper.get("condition_line_number"):
+                                result["condition_line_number"] = deeper["condition_line_number"]
+                        elif deeper:
+                            result["likely_cause"] = deeper.get("explanation", "")
+                        else:
+                            result["likely_cause"] = (
+                                f"Inner query returns {rows_before:,} rows before outer WHERE. "
+                                f"Replaced WHERE clause with 1=1 but still 0 alerts — "
+                                f"check the final query or other CTEs for additional filtering."
+                            )
+                    else:
                         result["likely_cause"] = (
                             f"Inner query returns {rows_before:,} rows before outer WHERE, but no single WHERE "
                             f"condition eliminates rows on its own. The combined conditions are too restrictive. "
-                            f"Verification could not match WHERE conditions in resolved SQL — "
-                            f"manually comment out WHERE conditions in the resolved function dataset SQL to confirm."
-                        )
-                    else:
-                        result["likely_cause"] = (
-                            f"Inner query returns {rows_before:,} rows before outer WHERE, but the combined WHERE "
-                            f"conditions eliminate all rows. Verification commented out "
-                            f"{verification.get('conditions_commented', 0)}/{verification.get('conditions_total', 0)} conditions "
-                            f"but still generated 0 alerts — deeper issue likely "
-                            f"(e.g., HAVING or JOINs inside the inner subquery). "
-                            f"Inner subquery without outer WHERE has data, so review WHERE conditions as primary suspect."
+                            f"Verification could not replace WHERE clause in resolved SQL — "
+                            f"manually comment out WHERE conditions to confirm."
                         )
                 else:
                     result["likely_cause"] = inner_analysis.get("explanation", "")
