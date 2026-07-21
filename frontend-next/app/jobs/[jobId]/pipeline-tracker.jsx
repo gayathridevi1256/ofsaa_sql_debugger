@@ -12,7 +12,7 @@ export function PipelineTracker({ steps, states, outputs, wsStatus }) {
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
       {steps.map((step, idx) => {
         const status = states[step.key] || "idle";
-        const cfg = STATUS_CFG[status];
+        const cfg = STATUS_CFG[status] || STATUS_CFG.idle;
         const output = outputs[step.key];
         return (
           <div key={step.key} className="card" style={{

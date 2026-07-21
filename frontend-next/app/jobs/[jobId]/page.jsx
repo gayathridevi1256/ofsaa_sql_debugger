@@ -38,6 +38,12 @@ export default function JobPage() {
   useEffect(() => {
     jobsAPI.getJob(jobId).then((data) => {
       setJob(data);
+      const states = {};
+      const outputs = {};
+      data.steps?.forEach((s) => { states[s.step_name] = s.status; outputs[s.step_name] = s.output || ""; });
+      setStepStates(states);
+      setStepOutputs(outputs);
+
       if (data.status === "completed" || data.status === "failed") {
         setJobStatus(data.status);
         setWsStatus("closed");
@@ -51,11 +57,6 @@ export default function JobPage() {
             try { setCteResults(JSON.parse(data.cte_results_json)); } catch {}
           }
         }
-        const states = {};
-        const outputs = {};
-        data.steps?.forEach((s) => { states[s.step_name] = s.status; outputs[s.step_name] = s.output || ""; });
-        setStepStates(states);
-        setStepOutputs(outputs);
       }
     }).catch(() => router.replace("/dashboard"));
   }, [jobId]);

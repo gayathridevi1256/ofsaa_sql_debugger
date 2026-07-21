@@ -558,22 +558,22 @@ def _step_sql_diagnostics(state: dict) -> str:
 
 async def _run_step(job_id, step_name, queue, fn, state, next_step):
     logger.info("Step starting: %s", step_name)
+    await _emit(queue, "step_started", {"job_id": job_id, "step": step_name, "message": f"Starting {_step_label(step_name)}..."})
     update_step_status(job_id, step_name, "running")
     update_job_status(job_id, "running", current_step=step_name)
-    await _emit(queue, "step_started", {"job_id": job_id, "step": step_name, "message": f"Starting {_step_label(step_name)}..."})
     try:
         output = await asyncio.to_thread(fn, state)
+        await _emit(queue, "step_completed", {"job_id": job_id, "step": step_name, "message": f"{_step_label(step_name)} completed", "output": output})
         update_step_status(job_id, step_name, "completed", output=output)
         if next_step:
             update_job_status(job_id, "running", current_step=next_step)
-        await _emit(queue, "step_completed", {"job_id": job_id, "step": step_name, "message": f"{_step_label(step_name)} completed", "output": output})
         logger.info("Step completed: %s", step_name)
         return True
     except Exception as e:
         error_msg = f"{type(e).__name__}: {str(e)}"
         logger.error("Step failed: %s - %s", step_name, error_msg)
-        update_step_status(job_id, step_name, "failed", error=error_msg)
         await _emit(queue, "step_failed", {"job_id": job_id, "step": step_name, "message": f"{_step_label(step_name)} failed", "error": error_msg})
+        update_step_status(job_id, step_name, "failed", error=error_msg)
         return False
 
 

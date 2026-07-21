@@ -1,6 +1,7 @@
 import axios from "axios";
 
-const api = axios.create({ baseURL: "/api" });
+const BACKEND = "http://127.0.0.1:8000/api";
+const api = axios.create({ baseURL: BACKEND });
 
 api.interceptors.request.use((config) => {
   const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
@@ -22,7 +23,6 @@ export const filesAPI = {
     const form = new FormData();
     form.append("file", file);
     return api.post("/upload", form, {
-      headers: { "Content-Type": "multipart/form-data" },
       onUploadProgress: (e) => onProgress?.(Math.round((e.loaded * 100) / e.total)),
     }).then((r) => r.data);
   },
