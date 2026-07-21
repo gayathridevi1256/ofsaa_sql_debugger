@@ -2,9 +2,16 @@
 
 import uuid
 import asyncio
+import logging
 from app.database.job_repo import create_job, get_job, list_jobs, update_job_status
 from app.database.audit_repo import audit
 from app.pipeline.orchestrator import run_pipeline
+from app.config import PIPELINE_TIMEOUT_SECONDS
+
+logger = logging.getLogger(__name__)
+
+BATCH_MAX_FILES = 20
+BATCH_POLL_INTERVAL = 2  # seconds between status checks
 
 
 async def _forward_queue_to_ws(queue: asyncio.Queue, manager, job_id: str):
@@ -29,12 +36,42 @@ async def run_pipeline_job(file_path: str, user: dict, force: bool = False, mana
     return {"job_id": job_id, "status": "pending", "cached": False}
 
 
+async def _wait_for_job(job_id: str) -> str:
+    """Poll job status until completed or failed. Returns final status."""
+    elapsed = 0
+    while elapsed < PIPELINE_TIMEOUT_SECONDS:
+        job = get_job(job_id)
+        if not job:
+            return "not_found"
+        status = job.get("status", "unknown")
+        if status in ("completed", "failed"):
+            return status
+        await asyncio.sleep(BATCH_POLL_INTERVAL)
+        elapsed += BATCH_POLL_INTERVAL
+    return "timeout"
+
+
 async def run_batch_jobs(file_paths: list[str], user: dict, manager=None) -> dict:
+    if len(file_paths) > BATCH_MAX_FILES:
+        file_paths = file_paths[:BATCH_MAX_FILES]
+
     batch_id = str(uuid.uuid4())
     results = []
-    for fp in file_paths:
+
+    for idx, fp in enumerate(file_paths, 1):
+        logger.info("Batch [%s] starting job %d/%d: %s", batch_id, idx, len(file_paths), fp)
         result = await run_pipeline_job(fp, user, force=True, manager=manager)
-        results.append({"job_id": result.get("job_id", ""), "file_path": fp, "status": result.get("status", "pending")})
+        job_id = result.get("job_id", "")
+
+        final_status = await _wait_for_job(job_id)
+        logger.info("Batch [%s] job %d/%d finished: %s (%s)", batch_id, idx, len(file_paths), job_id, final_status)
+
+        results.append({
+            "job_id": job_id,
+            "file_path": fp,
+            "status": final_status,
+        })
+
     return {"batch_id": batch_id, "total": len(results), "jobs": results}
 
 

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/hooks/use-auth";
 import { useWebSocket } from "@/hooks/use-websocket";
 import { Navbar } from "@/components/layout/navbar";
@@ -22,6 +22,8 @@ const PIPELINE_STEPS = [
 export default function JobPage() {
   const { jobId } = useParams();
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const batchIds = searchParams.get("batch");
   const { user, logout } = useAuth();
   const [job, setJob] = useState(null);
   const [stepStates, setStepStates] = useState({});
@@ -126,6 +128,11 @@ export default function JobPage() {
           </div>
           {jobStatus === "completed" && (
             <div style={{ display: "flex", gap: 8 }}>
+              {batchIds && (
+                <button className="btn btn-secondary btn-sm" onClick={() => router.push(`/dashboard/batch?ids=${batchIds}`)}>
+                  ← Back to Batch
+                </button>
+              )}
               <button className="btn btn-secondary btn-sm" onClick={() => router.push("/dashboard")}>
                 🔍 Check New Log
               </button>
