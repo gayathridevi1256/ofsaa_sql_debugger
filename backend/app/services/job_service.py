@@ -15,12 +15,15 @@ BATCH_POLL_INTERVAL = 2  # seconds between status checks
 
 
 async def _forward_queue_to_ws(queue: asyncio.Queue, manager, job_id: str):
-    while True:
-        msg = await queue.get()
-        if msg.get("event") in ("job_completed", "job_failed"):
+    try:
+        while True:
+            msg = await queue.get()
+            if msg.get("event") in ("job_completed", "job_failed"):
+                await manager.send(job_id, msg)
+                break
             await manager.send(job_id, msg)
-            break
-        await manager.send(job_id, msg)
+    finally:
+        manager.clear_buffer(job_id)
 
 
 async def run_pipeline_job(file_path: str, user: dict, force: bool = False, manager=None) -> dict:

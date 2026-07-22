@@ -225,7 +225,13 @@ function DetailRow({ label, value, highlight }) {
 }
 
 function DataAvailabilitySection({ data }) {
-  if (!data || !data.explanation) return null;
+  const hasData = data && (
+    data.explanation ||
+    data.rows_without_outer_where != null ||
+    data.rows_without_inner_having != null ||
+    data.union_all_branch_counts?.length > 0
+  );
+  if (!hasData) return null;
   return (
     <div style={{ marginTop: 8, padding: 8, background: "var(--bg-surface)", borderRadius: 4 }}>
       <span style={{ fontSize: "0.72rem", color: "var(--text-muted)", display: "block", marginBottom: 4 }}>

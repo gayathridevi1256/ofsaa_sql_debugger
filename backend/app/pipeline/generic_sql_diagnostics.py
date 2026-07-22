@@ -471,30 +471,64 @@ def _find_condition_line_in_sql(condition: str, sql_text: str) -> Optional[int]:
     if not condition or not sql_text:
         return None
 
+    lines = sql_text.splitlines()
+    header_offset = 0
+    for line in lines:
+        stripped = line.strip()
+        if stripped == '' or stripped.startswith('--'):
+            header_offset += 1
+        else:
+            break
+    if header_offset > 0:
+        sql_text = '\n'.join(lines[header_offset:])
+
     def _normalize(text):
         text = re.sub(r'\s+', ' ', text).strip()
         text = re.sub(r'\s*([<>=!]+)\s*', r' \1 ', text)
-        return text.upper()
+        text = text.upper()
+        text = re.sub(r'\bNOT\s+(.*?)\s+IS\s+NULL\b', r'\1 IS NOT NULL', text)
+        return text
 
-    cond_norm = _normalize(condition)
-    for lineno, line in enumerate(sql_text.splitlines(), start=1):
-        line_norm = _normalize(line)
-        if cond_norm in line_norm:
-            return lineno
+    def _try_match(search_text: str) -> Optional[int]:
+        search = _normalize(search_text)
+        for lineno, line in enumerate(sql_text.splitlines(), start=1):
+            line_norm = _normalize(line)
+            if search in line_norm:
+                return lineno
 
-    cond_short = cond_norm[:80] if len(cond_norm) > 80 else cond_norm
-    for lineno, line in enumerate(sql_text.splitlines(), start=1):
-        line_norm = _normalize(line)
-        if cond_short in line_norm:
-            return lineno
+        search_short = search[:200]
+        s_lines = sql_text.splitlines()
+        for window in range(2, 5):
+            for i in range(len(s_lines) - window + 1):
+                block = ' '.join(s_lines[i:i + window])
+                block_norm = _normalize(block)
+                if search_short in block_norm:
+                    return i + 1
 
-    lines = sql_text.splitlines()
-    for window in range(2, 4):
-        for i in range(len(lines) - window + 1):
-            block = ' '.join(lines[i:i + window])
-            block_norm = _normalize(block)
-            if cond_short in block_norm:
-                return i + 1
+        cond_words = [w for w in re.split(r'[\s()\'"=<>!,]+', search_text) if len(w) > 3 and w.upper() not in ('NULL', 'TRUE', 'FALSE', 'LIKE', 'BETWEEN')]
+        if len(cond_words) >= 2:
+            search_phrase = ' '.join(w.upper() for w in cond_words[:3])
+            for lineno, line in enumerate(sql_text.splitlines(), start=1):
+                if search_phrase in _normalize(line):
+                    return lineno
+            for window in range(2, 5):
+                for i in range(len(s_lines) - window + 1):
+                    block = ' '.join(s_lines[i:i + window])
+                    if search_phrase in _normalize(block):
+                        return i + 1
+        return None
+
+    result = _try_match(condition)
+    if result is not None:
+        return result + header_offset
+
+    from app.pipeline.sql_diagnostics import _split_and_conditions
+    parts = _split_and_conditions(condition)
+    if len(parts) > 1:
+        for part in parts:
+            result = _try_match(part.strip())
+            if result is not None:
+                return result + header_offset
 
     return None
 

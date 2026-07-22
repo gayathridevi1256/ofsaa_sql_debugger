@@ -2329,20 +2329,26 @@ def _probe_table_data(conn, table_name: str, metadata: dict) -> dict:
 
 def _extract_alias_map(from_clause: str) -> dict[str, str]:
     """Parses a FROM clause and returns {alias: table_name}."""
-    # Normalise: treat explicit JOINs like comma-joins for alias parsing
-    text = re.sub(r'\bON\b.+?(?=,|\bJOIN\b|\bWHERE\b|$)', ' ', from_clause,
-                  flags=re.IGNORECASE | re.DOTALL)
-    text = re.sub(r'\b(?:INNER|LEFT|RIGHT|OUTER|CROSS|FULL)\s+(?:OUTER\s+)?JOIN\b', ',',
-                  text, flags=re.IGNORECASE)
-    text = re.sub(r'^\bFROM\b\s*', '', text.strip(), flags=re.IGNORECASE)
     alias_map: dict[str, str] = {}
-    for part in text.split(','):
-        tokens = part.strip().split()
+    skip = {'ON', 'WHERE', 'AND', 'OR', 'SET', 'HAVING', 'GROUP', 'ORDER',
+            'LEFT', 'RIGHT', 'INNER', 'OUTER', 'CROSS', 'FULL', 'JOIN',
+            'SELECT', 'UNION', 'FROM'}
+
+    normalized = from_clause
+    normalized = re.sub(r'\b(?:INNER|LEFT|RIGHT|OUTER|CROSS|FULL)\s+(?:OUTER\s+)?JOIN\b', ',', normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r'^\bFROM\b\s*', '', normalized.strip(), flags=re.IGNORECASE)
+
+    for part in normalized.split(','):
+        stripped = part.strip()
+        if not stripped or stripped.startswith('('):
+            continue
+        tokens = stripped.split()
         if not tokens:
+            continue
+        if tokens[0].upper() in skip:
             continue
         table = tokens[0]
         alias = tokens[1] if len(tokens) >= 2 else table.split('.')[-1]
-        skip = {'ON', 'WHERE', 'AND', 'OR', 'SET', 'HAVING', 'GROUP', 'ORDER'}
         if alias.upper() not in skip:
             alias_map[alias.lower()] = table
     return alias_map
@@ -2351,17 +2357,40 @@ def _extract_alias_map(from_clause: str) -> dict[str, str]:
 def _resolve_aliases(condition: str, sql: str) -> str | None:
     """Replace table aliases in a condition with actual table names.
 
-    e.g. 't.BENEF_ACCT_ID = a.ACCT_INTRL_ID' → 'MI_TRXN.BENEF_ACCT_ID = STG_ACCOUNT.ACCT_INTRL_ID'
+    e.g. 't.BENEF_ACCT_ID = a.ACCT_INTRL_ID' -> 'MI_TRXN.BENEF_ACCT_ID = STG_ACCOUNT.ACCT_INTRL_ID'
     Returns None if no alias map could be built.
     """
-    from_match = re.search(r'\bFROM\b\s+(.+?)(?:\bWHERE\b|\bGROUP\b|\bHAVING\b|\bORDER\b|$)', sql, re.IGNORECASE | re.DOTALL)
-    if not from_match:
-        return None
-    alias_map = _extract_alias_map(from_match.group(1))
+    alias_map: dict[str, str] = {}
+    skip = {'ON', 'WHERE', 'AND', 'OR', 'SET', 'HAVING', 'GROUP', 'ORDER',
+            'INNER', 'LEFT', 'RIGHT', 'OUTER', 'CROSS', 'FULL', 'JOIN',
+            'UNION', 'SELECT', 'FROM', 'LATERAL', 'ALL', 'ANY'}
+
+    for m in re.finditer(r'\b(?:FROM|JOIN)\b\s+', sql, re.IGNORECASE):
+        start = m.end()
+        after = sql[start:]
+        end_m = re.search(
+            r'\b(?:WHERE|GROUP|HAVING|ORDER|UNION)\b|'
+            r'\b(?:INNER|LEFT|RIGHT|CROSS|FULL)\s+(?:OUTER\s+)?JOIN\b|'
+            r'\bON\b|'
+            r'\(',
+            after, re.IGNORECASE
+        )
+        if end_m:
+            segment = after[:end_m.start()]
+        else:
+            segment = after
+
+        for part in segment.split(','):
+            tokens = part.strip().split()
+            if len(tokens) >= 2:
+                table = tokens[0]
+                alias = tokens[1]
+                if alias.upper() not in skip and not table.startswith('(') and alias.lower() not in alias_map:
+                    alias_map[alias.lower()] = table
+
     if not alias_map:
         return None
 
-    statements_above = re.search(r'\bfrom\b\s+(.+?)(?:\bWHERE\b|\bGROUP\b|\bHAVING\b|\bORDER\b|$)', sql, re.IGNORECASE | re.DOTALL)
     def _replace_alias(match):
         alias = match.group(1).lower()
         col = match.group(2)
@@ -2975,50 +3004,64 @@ def _find_condition_line_in_sql(condition: str, sql_text: str) -> int | None:
     if not condition or not sql_text:
         return None
 
+    lines = sql_text.splitlines()
+    header_offset = 0
+    for line in lines:
+        stripped = line.strip()
+        if stripped == '' or stripped.startswith('--'):
+            header_offset += 1
+        else:
+            break
+    if header_offset > 0:
+        sql_text = '\n'.join(lines[header_offset:])
+
     def _normalize(text):
         """Collapse whitespace and normalize spaces around operators."""
         text = re.sub(r'\s+', ' ', text).strip()
         text = re.sub(r'\s*([<>=!]+)\s*', r' \1 ', text)
-        return text.upper()
+        text = text.upper()
+        text = re.sub(r'\bNOT\s+(.*?)\s+IS\s+NULL\b', r'\1 IS NOT NULL', text)
+        return text
 
-    cond_norm = _normalize(condition)
-
-    # Try match on each line
-    for lineno, line in enumerate(sql_text.splitlines(), start=1):
-        line_norm = _normalize(line)
-        if cond_norm in line_norm:
-            return lineno
-
-    # Try short portion (first 80 chars)
-    cond_short = cond_norm[:80] if len(cond_norm) > 80 else cond_norm
-    for lineno, line in enumerate(sql_text.splitlines(), start=1):
-        line_norm = _normalize(line)
-        if cond_short in line_norm:
-            return lineno
-
-    # Multi-line search: flatten 2-3 consecutive lines
-    lines = sql_text.splitlines()
-    for window in range(2, 4):
-        for i in range(len(lines) - window + 1):
-            block = ' '.join(lines[i:i + window])
-            block_norm = _normalize(block)
-            if cond_short in block_norm:
-                return i + 1
-
-    # Try matching key identifiers
-    cond_words = [w for w in re.split(r'[\s()\'"=<>!,]+', condition) if len(w) > 3 and w.upper() not in ('NULL', 'TRUE', 'FALSE', 'LIKE', 'BETWEEN')]
-    if len(cond_words) >= 2:
-        search_phrase = ' '.join(w.upper() for w in cond_words[:3])
+    def _try_match(search_text: str) -> int | None:
+        search = _normalize(search_text)
         for lineno, line in enumerate(sql_text.splitlines(), start=1):
             line_norm = _normalize(line)
-            if search_phrase in line_norm:
+            if search in line_norm:
                 return lineno
-        for window in range(2, 4):
+
+        search_short = search[:200]
+        lines = sql_text.splitlines()
+        for window in range(2, 5):
             for i in range(len(lines) - window + 1):
                 block = ' '.join(lines[i:i + window])
                 block_norm = _normalize(block)
-                if search_phrase in block_norm:
+                if search_short in block_norm:
                     return i + 1
+
+        cond_words = [w for w in re.split(r'[\s()\'"=<>!,]+', search_text) if len(w) > 3 and w.upper() not in ('NULL', 'TRUE', 'FALSE', 'LIKE', 'BETWEEN')]
+        if len(cond_words) >= 2:
+            search_phrase = ' '.join(w.upper() for w in cond_words[:3])
+            for lineno, line in enumerate(sql_text.splitlines(), start=1):
+                if search_phrase in _normalize(line):
+                    return lineno
+            for window in range(2, 5):
+                for i in range(len(lines) - window + 1):
+                    block = ' '.join(lines[i:i + window])
+                    if search_phrase in _normalize(block):
+                        return i + 1
+        return None
+
+    result = _try_match(condition)
+    if result is not None:
+        return result + header_offset
+
+    parts = _split_and_conditions(condition)
+    if len(parts) > 1:
+        for part in parts:
+            result = _try_match(part.strip())
+            if result is not None:
+                return result + header_offset
 
     return None
 
