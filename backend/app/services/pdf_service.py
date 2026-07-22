@@ -61,6 +61,8 @@ def generate_job_report(job_id: str) -> bytes:
     if not job:
         raise ValueError(f"Job {job_id} not found")
 
+    metadata = _load_metadata(job)
+
     filename = f"report_{job_id[:8]}.pdf"
     filepath = PDF_REPORTS_DIR / filename
     filepath.parent.mkdir(parents=True, exist_ok=True)
@@ -77,7 +79,7 @@ def generate_job_report(job_id: str) -> bytes:
         author=APP_NAME,
     )
 
-    story = _build_story(job)
+    story = _build_story(job, metadata)
     doc.build(story)
     buffer.close()
 
@@ -86,13 +88,13 @@ def generate_job_report(job_id: str) -> bytes:
     return pdf_bytes
 
 
-def _build_story(job: dict) -> list:
+def _build_story(job: dict, metadata: dict = None) -> list:
     styles = _create_styles()
     story = []
 
     story.extend(_header_section(styles))
     story.append(Spacer(1, 6 * mm))
-    story.extend(_summary_section(job, styles))
+    story.extend(_summary_section(job, metadata, styles))
     story.append(Spacer(1, 8 * mm))
     story.extend(_steps_section(job, styles))
 
@@ -190,7 +192,7 @@ def _header_section(styles: dict) -> list:
     return elements
 
 
-def _summary_section(job: dict, styles: dict) -> list:
+def _summary_section(job: dict, metadata: dict = None, styles: dict = None) -> list:
     elements = []
     elements.append(Paragraph("Job Summary", styles["h2"]))
 
@@ -204,6 +206,15 @@ def _summary_section(job: dict, styles: dict) -> list:
         ["Started", _format_dt_str(job.get("started_at"))],
         ["Completed", _format_dt_str(job.get("completed_at"))],
     ]
+
+    if metadata:
+        if metadata.get("scnro_id"):
+            data.append(["Scenario ID", str(metadata["scnro_id"])])
+        if metadata.get("tshld_set_id"):
+            data.append(["Threshold Set ID", str(metadata["tshld_set_id"])])
+        if metadata.get("current_business_date"):
+            data.append(["Business Date", str(metadata["current_business_date"])])
+
     if job.get("error_message"):
         data.append(["Error", job["error_message"]])
 
@@ -423,6 +434,20 @@ def _footer_section(styles: dict) -> list:
         styles["footer"],
     ))
     return elements
+
+
+def _load_metadata(job: dict) -> dict | None:
+    output_dir = job.get("output_dir")
+    if not output_dir:
+        return None
+    metadata_path = Path(output_dir) / "metadata.json"
+    if not metadata_path.exists():
+        return None
+    try:
+        with open(metadata_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
 
 
 def _parse_json(raw: str | None):

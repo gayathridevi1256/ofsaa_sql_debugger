@@ -10,7 +10,7 @@ import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 
-from app.config import OUTPUTS_DIR, PIPELINE_DIR
+from app.config import OUTPUTS_DIR, PIPELINE_DIR, PIPELINE_TIMEOUT_SECONDS
 from app.database.job_repo import update_job_status, update_step_status
 from app.database.audit_repo import audit
 
@@ -564,13 +564,22 @@ async def _run_step(job_id, step_name, queue, fn, state, next_step):
     update_step_status(job_id, step_name, "running")
     update_job_status(job_id, "running", current_step=step_name)
     try:
-        output = await asyncio.to_thread(fn, state)
+        output = await asyncio.wait_for(
+            asyncio.to_thread(fn, state),
+            timeout=PIPELINE_TIMEOUT_SECONDS
+        )
         await _emit(queue, "step_completed", {"job_id": job_id, "step": step_name, "message": f"{_step_label(step_name)} completed", "output": output})
         update_step_status(job_id, step_name, "completed", output=output)
         if next_step:
             update_job_status(job_id, "running", current_step=next_step)
         logger.info("Step completed: %s", step_name)
         return True
+    except asyncio.TimeoutError:
+        error_msg = f"Step timed out after {PIPELINE_TIMEOUT_SECONDS}s"
+        logger.error("Step timed out: %s - %s", step_name, error_msg)
+        await _emit(queue, "step_failed", {"job_id": job_id, "step": step_name, "message": f"{_step_label(step_name)} failed", "error": error_msg})
+        update_step_status(job_id, step_name, "failed", error=error_msg)
+        return False
     except Exception as e:
         error_msg = f"{type(e).__name__}: {str(e)}"
         logger.error("Step failed: %s - %s", step_name, error_msg)
