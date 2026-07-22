@@ -3407,7 +3407,8 @@ def run_granular_cte_diagnostics(
     metadata: dict = None,
     run_logger=None,
     dataset_query_sql: str = None,
-    dataset_query_raw: str = None
+    dataset_query_raw: str = None,
+    dataset_query_file: str = None,
 ) -> list[dict]:
     """
     Runs progressive diagnostics on a list of CTEs.
@@ -3894,11 +3895,32 @@ def run_granular_cte_diagnostics(
                     run_logger.log(6, f"  Column: {s.get('column')} — {s.get('suggestion', '')[:100]}")
 
     # Resolve table aliases in failure_condition for human-readable display
+    # Also fill missing condition_line_number and add source_file
+    import os as _os
+    source_file = _os.path.basename(dataset_query_file) if dataset_query_file else (dataset_query_file or "")
+    if not source_file and dataset_query_raw:
+        source_file = "dataset_query.sql"
+
     cte_sql_map = {cte["name"].lower(): cte["sql"] for cte in ctes}
     for r in results:
         fc = r.get("failure_condition")
         if not fc:
             continue
+
+        # Add source_file to every result with a failure_condition
+        if source_file:
+            r["source_file"] = source_file
+
+        # Fill missing condition_line_number
+        if not r.get("condition_line_number"):
+            # Try dataset query first, then CTE's own SQL
+            for search_sql in (dataset_query_raw, cte_sql_map.get(r["cte_name"].lower(), "")):
+                if search_sql:
+                    ln = _find_condition_line_in_sql(fc, search_sql)
+                    if ln:
+                        r["condition_line_number"] = ln
+                        break
+
         # Try CTE-specific SQL first, fall back to first CTE or dataset query
         cte_sql = cte_sql_map.get(r["cte_name"].lower()) or next(iter(cte_sql_map.values()), None)
         if not cte_sql and dataset_query_sql:

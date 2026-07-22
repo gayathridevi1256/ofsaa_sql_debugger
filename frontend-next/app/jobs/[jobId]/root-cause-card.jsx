@@ -75,9 +75,13 @@ function CteDiagnosisCard({ result, isPrimary }) {
 
       {expanded && (
         <>
-          {/* Line number */}
+          {/* Source file & line number */}
           {result.condition_line_number && (
-            <DetailRow label="Dataset Line" value={`Line ${result.condition_line_number}`} highlight />
+            <DetailRow
+              label="Source"
+              value={`${result.source_file || ""} : Line ${result.condition_line_number}`}
+              highlight
+            />
           )}
 
           {/* Failure condition */}

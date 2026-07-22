@@ -429,12 +429,13 @@ def _step_sql_diagnostics(state: dict) -> str:
 
     dataset_query_sql = None
     dataset_query_raw = None
+    dataset_query_file = None
     try:
-        dataset_file = get_latest_dataset_query_file()
-        dataset_query_sql = load_sql_file(dataset_file)
-        with open(dataset_file, "r", encoding="utf-8") as f:
+        dataset_query_file = get_latest_dataset_query_file()
+        dataset_query_sql = load_sql_file(dataset_query_file)
+        with open(dataset_query_file, "r", encoding="utf-8") as f:
             dataset_query_raw = f.read()
-        logger.info("Loaded dataset query: %s (stripped=%d, raw=%d chars)", dataset_file, len(dataset_query_sql), len(dataset_query_raw))
+        logger.info("Loaded dataset query: %s (stripped=%d, raw=%d chars)", dataset_query_file, len(dataset_query_sql), len(dataset_query_raw))
     except Exception as e:
         logger.warning("Could not load dataset query for line number lookup: %s", e)
 
@@ -487,6 +488,7 @@ def _step_sql_diagnostics(state: dict) -> str:
             conn, ctes_to_diagnose, metadata, run_logger=run_logger,
             dataset_query_sql=dataset_query_sql,
             dataset_query_raw=dataset_query_raw,
+            dataset_query_file=dataset_query_file,
         )
 
         state["results"] = results
