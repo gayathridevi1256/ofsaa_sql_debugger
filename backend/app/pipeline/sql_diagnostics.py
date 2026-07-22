@@ -475,7 +475,7 @@ def _split_conditions_by(text: str, keyword: str) -> list[str]:
     """Generic splitter — splits text by the given keyword at depth 0."""
     if not text:
         return []
-    kw = keyword.upper()
+    kw = keyword.upper().strip()
     klen = len(kw)
     conditions, current, depth, i = [], "", 0, 0
     while i < len(text):
@@ -490,7 +490,6 @@ def _split_conditions_by(text: str, keyword: str) -> list[str]:
             depth == 0
             and text[i:i + klen].upper() == kw
             and (i == 0 or not text[i - 1].isalnum() and text[i - 1] != '_')
-            and (i + klen == len(text) or not text[i + klen].isalnum() and text[i + klen] != '_')
         ):
             if current.strip():
                 conditions.append(current.strip())
@@ -560,7 +559,6 @@ def _likely_cause(condition: str) -> str:
     guard_m = re.match(r"^\(\s*'N'\s*=\s*'Y'\s+OR\s+(.+)\)\s*$", condition.strip(), re.IGNORECASE)
     if guard_m:
         inner = guard_m.group(1).strip()
-        # Check inner for jurisdiction
         ji = re.search(r"JRSDCN_CD\s+IN\s*\(\s*'([^']+)'", inner, re.IGNORECASE)
         if ji:
             code = ji.group(1)
@@ -568,7 +566,6 @@ def _likely_cause(condition: str) -> str:
                 f"Data insufficient — no records found for jurisdiction '{code}'. "
                 f"The account table has no rows with JRSDCN_CD = '{code}' for this batch date."
             )
-        # Check inner for type code
         cd_m = re.search(r"(\w+_CD)\s+IN\s*\(([^)]+)\)", inner, re.IGNORECASE)
         if cd_m:
             col, vals = cd_m.group(1), cd_m.group(2)
@@ -579,12 +576,15 @@ def _likely_cause(condition: str) -> str:
         if any(k in c for k in ["MIN_DT", "MAX_DT", "DATE", "DT"]):
             return "Date filter too restrictive — no rows fall in the date range returned by the subquery"
         return "Subquery returns no rows or NULL — condition filters everything out"
-    if " IN " in c and "(" in c:
-        return "IN list has no matching values in the data"
+
+    # Threshold checks BEFORE IN checks — thresholds are more actionable
     if any(op in condition for op in [">=", "<=", ">", "<"]):
         if any(d in c for d in ["_DT", "DATE", "TRUNC", "SYSDATE"]):
             return "Date comparison too restrictive — data does not fall in the expected range"
         return "Thresholds are set too high — range condition eliminates all rows"
+
+    if " IN " in c and "(" in c:
+        return "IN list has no matching values in the data"
     if "=" in c and "NULL" not in c:
         return "Equality filter has no matching values in the data"
     if "IS NULL" in c or "IS NOT NULL" in c:
@@ -2448,7 +2448,14 @@ def _verify_killer_source(conn, killer_cond: str, base_from: str, metadata: dict
         result = {"table": table, "filter_condition": filter_cond, "matching_rows": count}
 
         # For numeric threshold conditions, also fetch the actual column range
+        # Handle both direct columns (v.Amount >= 100) and function-wrapped (DECODE(...) >= 100)
         col_m = re.search(r'\b(\w+)\s*[<>]=?\s*[\d.]+', filter_cond)
+        if not col_m:
+            # Try matching function-wrapped columns like DECODE('B','F',COL) >= 1000000
+            col_m = re.search(
+                r'(?:DECODE|COALESCE|NVL|GREATEST|LEAST)\s*\([^)]*?(\w+)\s*\)\s*[<>]=?\s*[\d.]+',
+                filter_cond, re.IGNORECASE
+            )
         if col_m and count == 0:
             col_name = col_m.group(1)
             cursor = conn.cursor()
