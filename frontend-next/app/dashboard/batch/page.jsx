@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { useAuth } from "@/hooks/use-auth";
 import { Navbar } from "@/components/layout/navbar";
@@ -13,7 +13,7 @@ const STATUS_MAP = {
   pending: { color: "var(--text-muted)", bg: "var(--bg-overlay)", label: "Queued" },
 };
 
-export default function BatchPage() {
+function BatchPageInner() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const { user, logout } = useAuth();
@@ -120,5 +120,13 @@ export default function BatchPage() {
         )}
       </main>
     </div>
+  );
+}
+
+export default function BatchPage() {
+  return (
+    <Suspense fallback={<div style={{ display: "flex", justifyContent: "center", padding: 40 }}><div className="spinner" /></div>}>
+      <BatchPageInner />
+    </Suspense>
   );
 }
