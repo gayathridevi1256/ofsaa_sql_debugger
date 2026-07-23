@@ -4,9 +4,10 @@ set -e
 APP_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$APP_DIR"
 
-pkill -f "uvicorn app.main" 2>/dev/null || true
-pkill -f "next start" 2>/dev/null || true
-sleep 1
+echo "=== Killing old processes ==="
+fuser -k 8000/tcp 2>/dev/null || true
+fuser -k 3000/tcp 2>/dev/null || true
+sleep 2
 
 mkdir -p uploads outputs logs db pdf_reports
 
