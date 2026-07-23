@@ -399,6 +399,7 @@ def parse_sql_structure(sql: str) -> dict:
     group_pos  = _find_top_level_clause("GROUP BY", clean)
     having_pos = _find_top_level_clause("HAVING",   clean)
     order_pos  = _find_top_level_clause("ORDER BY", clean)
+    union_pos  = _find_top_level_clause("UNION",    clean)
 
     empty = {
         "base_from": "", "joins": [], "from_with_joins": "",
@@ -438,9 +439,9 @@ def parse_sql_structure(sql: str) -> dict:
 
     where_conditions = []
     if where_pos != -1:
-        end_of_where = next(
-            (p for p in [group_pos, having_pos, order_pos] if p != -1),
-            len(clean)
+        end_of_where = min(
+            (p for p in [union_pos, group_pos, having_pos, order_pos] if p != -1 and p > where_pos),
+            default=len(clean)
         )
         where_block = clean[where_pos:end_of_where].strip()
         where_block = re.sub(r'^\s*WHERE\s+', '', where_block, flags=re.IGNORECASE).strip()
@@ -3290,7 +3291,8 @@ def eliminate_conditions_and_retry(
 
         # No single killer — try removing pairs
         wc = parsed["where_conditions"]
-        if len(wc) >= 2:
+        PAIRWISE_MAX_CONDITIONS = 40
+        if len(wc) >= 2 and len(wc) <= PAIRWISE_MAX_CONDITIONS:
             for i in range(len(wc)):
                 for j in range(i + 1, len(wc)):
                     remaining = [c for k, c in enumerate(wc) if k != i and k != j]
@@ -3307,6 +3309,11 @@ def eliminate_conditions_and_retry(
                         if run_logger:
                             run_logger.log(6, f"  Remove WHERE[{i},{j}] pair: {cur:,} rows restored")
                         return result
+        elif len(wc) > PAIRWISE_MAX_CONDITIONS:
+            if run_logger:
+                run_logger.log(6, f"--- Skipping pairwise search: {len(wc)} conditions exceeds limit of {PAIRWISE_MAX_CONDITIONS} ---")
+            else:
+                print(f"\n  --- Skipping pairwise search: {len(wc)} conditions exceeds limit of {PAIRWISE_MAX_CONDITIONS} ---")
 
     # Phase 3: Remove ALL conditions
     if run_logger:

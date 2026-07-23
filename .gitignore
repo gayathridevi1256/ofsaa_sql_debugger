@@ -8,6 +8,8 @@ wheels/
 
 # Virtual environments
 .venv/
+env/
+venv/
 backend/.venv/
 
 # Secrets — never commit
@@ -23,25 +25,48 @@ backend/uploads/
 backend/outputs/
 backend/pdf_reports/
 
+# Root-level runtime data
+db/
+logs/
+outputs/
+uploads/
+pdf_reports/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
 # Frontend runtime data
 frontend-next/.next/
 frontend-next/out/
-
-# Sample data
-data/Sample Scenario logs/
-
-# Stray binaries
-datamap.jar
-
-# Stray root files
-*.log
-*.docx
-*.txt
+.next/
 
 # Node
 node_modules/
 frontend-next/node_modules/
 
-# OS
+# Sample log files and data
+*.log
+*.docx
+*.pdf
+*.txt
+
+# IDE / editor
+.claude/
+.vscode/
+.idea/
 .DS_Store
 Thumbs.db
+*.swp
+*.swo
+
+# Python version
+.python-version
+
+# Stray root files (from Windows sync)
+package-lock.json
+package.json
+
+# Binary artifacts
+datamap.jar
