@@ -2521,6 +2521,21 @@ def diagnose_where_conditions(
         if cur > 0 and primary_killer is None:
             primary_killer = cond.strip()
 
+    if primary_killer is None and len(conditions) >= 2:
+        # No single killer — try removing pairs
+        for i in range(len(conditions)):
+            for j in range(i + 1, len(conditions)):
+                remaining = [c for k, c in enumerate(conditions) if k != i and k != j]
+                test_sql = base_sql + ("\nWHERE " + "\n  AND ".join(remaining) if remaining else "")
+                cur = execute_count(conn, test_sql, metadata, run_logger=run_logger, step=6, label=f"where_remove_pair_{i}_{j}")
+                if cur > 0:
+                    primary_killer = "\n  AND ".join([conditions[i].strip(), conditions[j].strip()])
+                    if run_logger:
+                        run_logger.log(6, f"  WHERE remove[{i},{j}] pair: {cur:,} rows restored")
+                    break
+            if primary_killer is not None:
+                break
+
     if primary_killer is None:
         # All conditions individually appear necessary — combination too restrictive
         return None
@@ -3273,11 +3288,32 @@ def eliminate_conditions_and_retry(
         if result["failure_type"] and result["failure_condition"]:
             return result
 
+        # No single killer — try removing pairs
+        wc = parsed["where_conditions"]
+        if len(wc) >= 2:
+            for i in range(len(wc)):
+                for j in range(i + 1, len(wc)):
+                    remaining = [c for k, c in enumerate(wc) if k != i and k != j]
+                    test_sql = base_sql + ("\nWHERE " + "\n  AND ".join(remaining) if remaining else "")
+                    cur = execute_count(conn, test_sql, metadata, run_logger=run_logger, step=6, label=f"where_remove_pair_{i}_{j}")
+                    if cur > 0:
+                        result["failure_type"] = "WHERE"
+                        result["elimination_phase"] = "WHERE"
+                        result["rows_after_elimination"] = cur
+                        combined = "\n  AND ".join([wc[i].strip(), wc[j].strip()])
+                        result["failure_condition"] = combined
+                        result["likely_cause"] = _likely_cause(combined)
+                        result["condition_line_number"] = _find_condition_line_in_sql(combined, dataset_query_raw)
+                        if run_logger:
+                            run_logger.log(6, f"  Remove WHERE[{i},{j}] pair: {cur:,} rows restored")
+                        return result
+
     # Phase 3: Remove ALL conditions
     if run_logger:
         run_logger.log(6, "--- Phase 3: Removing ALL conditions ---")
     else:
         print("\n  --- Phase 3: Removing ALL conditions ---")
+    bare_count = 0
     select_match = re.match(r'(SELECT\b.*?\bFROM\b\s+.*?)$', sql, re.IGNORECASE | re.DOTALL)
     if select_match:
         bare_count = execute_count(conn, select_match.group(1).strip(), metadata, run_logger=run_logger, step=6, label="bare_select_from")
@@ -3287,6 +3323,44 @@ def eliminate_conditions_and_retry(
             result["elimination_phase"] = "ALL"
             result["failure_condition"] = "Combination of WHERE and HAVING conditions"
             result["likely_cause"] = f"Without any conditions, query returns {bare_count:,} rows."
+            return result
+
+    # Phase 4: JOIN elimination — try each JOIN to find the killer
+    if parsed["joins"]:
+        if run_logger:
+            run_logger.log(6, "--- Phase 4: Eliminating JOIN conditions ---")
+        else:
+            print("\n  --- Phase 4: Eliminating JOIN conditions ---")
+        select_line = parsed["from_with_joins"].split("\n")[0]
+        base_sql = select_line + "\n" + parsed["base_from"]
+        prev_count = execute_count(conn, base_sql, metadata, run_logger=run_logger, step=6, label="joins_ecr_base")
+        current_sql = base_sql
+        for idx, join in enumerate(parsed["joins"]):
+            current_sql += f"\n{join}"
+            cur_count = execute_count(conn, current_sql, metadata, run_logger=run_logger, step=6, label=f"joins_ecr_add_{idx}")
+            if prev_count > 0 and cur_count == 0:
+                result["failure_type"] = "WHERE_CONDITION"
+                result["elimination_phase"] = "JOIN"
+                result["rows_before_elimination"] = prev_count
+                result["rows_after_elimination"] = cur_count
+                result["failure_condition"] = join
+                result["likely_cause"] = "JOIN/WHERE condition returns 0 rows — no matching keys across the source tables."
+                result["condition_line_number"] = _find_condition_line_in_sql(join, dataset_query_raw)
+                return result
+            prev_count = cur_count
+
+    # Phase 5: Probe UNION ALL branches
+    branch_counts = _probe_union_all_branches(conn, sql, metadata, run_logger=run_logger)
+    if branch_counts:
+        empty_branches = [b for b in branch_counts if b["row_count"] == 0]
+        if empty_branches:
+            result["failure_type"] = "NO_SOURCE_DATA"
+            result["elimination_phase"] = "ALL"
+            result["data_availability"] = {
+                "union_all_branch_counts": branch_counts,
+                "rows_without_outer_where": bare_count,
+            }
+            result["likely_cause"] = "No data in any UNION ALL branch — source tables or views may be empty for the current batch date."
             return result
 
     result["failure_type"] = "unknown"
@@ -3317,27 +3391,85 @@ def diagnose_inner_query_sequence(
             print(f"  INNER QUERY: {view_name} (depth={iq['depth']}, context={iq['context']})")
             print(f"{'=' * 80}")
         if not _create_inner_view(conn, view_name, sql):
-            results.append({
+            # Try direct execution — correlated subqueries (outer refs cause ORA-00904)
+            try:
+                cursor = conn.cursor()
+                cursor.execute(f"SELECT COUNT(*) FROM (\n{sql}\n) t")
+                direct_count = cursor.fetchone()[0]
+                cursor.close()
+            except Exception as e:
+                err = str(e).upper()
+                if run_logger:
+                    run_logger.log(6, f"  ⚠️ {view_name} is a correlated subquery — skipping (references outer scope: {e})")
+                else:
+                    print(f"  ⚠️ {view_name} is a correlated subquery — skipping (references outer scope)")
+                continue
+            if direct_count > 0:
+                if run_logger:
+                    run_logger.log(6, f"  ✅ {view_name} is healthy — {direct_count:,} rows")
+                else:
+                    print(f"  ✅ {view_name} is healthy — {direct_count:,} rows")
+                continue
+            # View failed, direct count returns 0 — try condition elimination
+            diag = eliminate_conditions_and_retry(
+                conn, sql, metadata, threshold_bindings, threshold_config,
+                param_mapping, run_logger=run_logger,
+                dataset_query_sql=dataset_query_sql,
+                dataset_query_raw=dataset_query_raw
+            )
+            result = {
                 "cte_name": f"final_query/{view_name}",
-                "failure_type": "execution_error",
-                "failure_condition": None,
-                "rows_before": None, "rows_after": None,
-                "likely_cause": f"Failed to create view {view_name}",
-                "threshold_suggestions": [], "data_availability": {}, "inner_query": iq,
-            })
+                "failure_type": diag["failure_type"],
+                "failure_condition": diag["failure_condition"],
+                "rows_before": 0, "rows_after": diag["rows_after_elimination"],
+                "likely_cause": diag["likely_cause"],
+                "threshold_suggestions": diag.get("threshold_suggestions", []),
+                "data_availability": diag.get("data_availability", {}),
+                "inner_query": iq,
+                "elimination_phase": diag["elimination_phase"],
+                "having_analysis": diag.get("having_analysis", []),
+                "where_analysis": diag.get("where_analysis", []),
+                "condition_line_number": diag.get("condition_line_number"),
+                "created_views": list(created_views),
+            }
+            results.append(result)
+            if diag["failure_type"] and diag["failure_condition"]:
+                if run_logger:
+                    run_logger.log(6, f"  Root cause found in {view_name}: {diag['failure_type']} — {diag['failure_condition'][:100]}")
+                else:
+                    print(f"  Root cause found in {view_name}: {diag['failure_type']} — {diag['failure_condition'][:100]}")
+                break
             continue
         created_views.append(view_name)
         count = _validate_inner_view(conn, view_name)
         if count < 0:
-            results.append({
-                "cte_name": f"final_query/{view_name}",
-                "failure_type": "execution_error",
-                "failure_condition": None,
-                "rows_before": None, "rows_after": None,
-                "likely_cause": f"Failed to validate view {view_name}",
-                "threshold_suggestions": [], "data_availability": {}, "inner_query": iq,
-            })
-            continue
+            # View was created but querying it failed — likely a correlated subquery
+            # that references outer scope columns. Drop the view and try direct execution.
+            try:
+                cursor = conn.cursor()
+                cursor.execute(f"DROP VIEW {view_name}")
+                cursor.close()
+            except Exception:
+                pass
+            try:
+                cursor = conn.cursor()
+                cursor.execute(f"SELECT COUNT(*) FROM (\n{sql}\n) t")
+                direct_count = cursor.fetchone()[0]
+                cursor.close()
+            except Exception as e:
+                if run_logger:
+                    run_logger.log(6, f"  ⚠️ {view_name} is a correlated subquery — skipping (references outer scope: {e})")
+                else:
+                    print(f"  ⚠️ {view_name} is a correlated subquery — skipping (references outer scope)")
+                continue
+            if direct_count > 0:
+                if run_logger:
+                    run_logger.log(6, f"  ✅ {view_name} is healthy — {direct_count:,} rows")
+                else:
+                    print(f"  ✅ {view_name} is healthy — {direct_count:,} rows")
+                continue
+            # Direct count returned 0 — proceed to condition elimination
+            count = 0
         if count > 0:
             if run_logger:
                 run_logger.log(6, f"  ✅ {view_name} is healthy — {count:,} rows")
@@ -3365,7 +3497,7 @@ def diagnose_inner_query_sequence(
             "rows_before": 0, "rows_after": diag["rows_after_elimination"],
             "likely_cause": diag["likely_cause"],
             "threshold_suggestions": diag.get("threshold_suggestions", []),
-            "data_availability": {},
+            "data_availability": diag.get("data_availability", {}),
             "inner_query": iq,
             "elimination_phase": diag["elimination_phase"],
             "having_analysis": diag.get("having_analysis", []),
@@ -3666,7 +3798,7 @@ def run_granular_cte_diagnostics(
                     threshold_bindings, threshold_config,
                     param_mapping, run_logger=run_logger,
                     dataset_query_sql=dataset_query_sql,
-                    dataset_query_raw=dataset_query_raw
+                    dataset_query_raw=dataset_query_raw,
                 )
                 if inner_results:
                     # Find the result with the real diagnosis (not execution_error)
