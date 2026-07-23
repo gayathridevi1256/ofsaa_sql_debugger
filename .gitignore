@@ -16,7 +16,6 @@ backend/.venv/
 .env
 frontend-next/.env
 frontend-next/.env.production
-frontend-next/.env.local
 
 # Backend runtime data
 backend/db/
