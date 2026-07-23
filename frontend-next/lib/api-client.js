@@ -52,6 +52,21 @@ export const jobsAPI = {
       link.remove();
       window.URL.revokeObjectURL(url);
     }),
+  downloadBatchReport: (jobIds) =>
+    api.post("/jobs/batch-report", null, {
+      params: { job_ids: jobIds.join(",") },
+      responseType: "blob",
+    }).then((r) => {
+      const ts = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 14);
+      const url = window.URL.createObjectURL(new Blob([r.data]));
+      const link = document.createElement("a");
+      link.href = url;
+      link.setAttribute("download", `batch_report_${ts}.pdf`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    }),
 };
 
 export const adminAPI = {

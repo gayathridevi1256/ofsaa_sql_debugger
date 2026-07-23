@@ -436,7 +436,124 @@ def _footer_section(styles: dict) -> list:
     return elements
 
 
-def _load_metadata(job: dict) -> dict | None:
+def generate_batch_report(job_ids: list[str]) -> bytes:
+    jobs = []
+    for jid in job_ids:
+        job = get_job(jid)
+        if job:
+            jobs.append(job)
+
+    if not jobs:
+        raise ValueError("No valid jobs found")
+
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    filename = f"batch_report_{ts}.pdf"
+    filepath = PDF_REPORTS_DIR / filename
+    filepath.parent.mkdir(parents=True, exist_ok=True)
+
+    doc = SimpleDocTemplate(
+        str(filepath),
+        pagesize=A4,
+        leftMargin=20 * mm,
+        rightMargin=20 * mm,
+        topMargin=20 * mm,
+        bottomMargin=20 * mm,
+        title="Batch Diagnostic Report",
+        author=APP_NAME,
+    )
+
+    styles = _create_styles()
+    story = _build_batch_story(jobs, styles)
+    doc.build(story)
+
+    pdf_bytes = filepath.read_bytes()
+    logger.info("Batch PDF report generated: %s (%d bytes, %d jobs)", filename, len(pdf_bytes), len(jobs))
+    return pdf_bytes
+
+
+def _build_batch_story(jobs: list[dict], styles: dict) -> list:
+    story = []
+    story.extend(_header_section(styles))
+
+    total = len(jobs)
+    with_alerts = sum(1 for j in jobs if j.get("alerts_generated"))
+    without_alerts = sum(1 for j in jobs if j.get("status") == "completed" and not j.get("alerts_generated"))
+    failed = sum(1 for j in jobs if j.get("status") == "failed")
+
+    story.append(Spacer(1, 6 * mm))
+    story.append(Paragraph("Batch Run Summary", styles["h2"]))
+
+    summary_data = [
+        ["Total Scenarios", str(total)],
+        ["With Alerts", str(with_alerts)],
+        ["Without Alerts", str(without_alerts)],
+        ["Failed", str(failed)],
+    ]
+
+    table = Table(summary_data, colWidths=[120, 80], hAlign="LEFT")
+    table.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+        ("FONTNAME", (1, 0), (1, -1), "Helvetica"),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("TEXTCOLOR", (0, 0), (0, -1), MUTED),
+        ("TEXTCOLOR", (1, 0), (1, -1), DARK),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("LINEBELOW", (0, 0), (-1, -2), 0.3, BORDER),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+    ]))
+    story.append(table)
+
+    story.append(Spacer(1, 8 * mm))
+    story.append(Paragraph("Individual Job Results", styles["h2"]))
+
+    for idx, job in enumerate(jobs, 1):
+        if idx > 1:
+            story.append(Spacer(1, 4 * mm))
+            story.append(HRFlowable(width="100%", thickness=0.3, color=BORDER, spaceBefore=2, spaceAfter=2))
+
+        scenario = job.get("scenario_name") or job.get("log_filename") or "Unknown"
+        status = job.get("status", "unknown").upper()
+        alerts = "Yes" if job.get("alerts_generated") else "No"
+        status_color = STATUS_COLORS.get(job.get("status", ""), "#64748b")
+
+        job_header = [
+            Paragraph(f"<b>#{idx} {scenario}</b>", styles["h3"]),
+        ]
+        story.extend(job_header)
+
+        job_data = [
+            ["Job ID", (job.get("job_id", "") or "")[:16]],
+            ["Status", Paragraph(f"<font color='{status_color}'>● {status}</font>", styles["body"])],
+            ["Alerts", alerts],
+            ["Batch Date", job.get("batch_date") or "N/A"],
+            ["Log File", job.get("log_filename", "N/A")],
+        ]
+
+        job_table = Table(job_data, colWidths=[100, 380], hAlign="LEFT")
+        job_table.setStyle(TableStyle([
+            ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+            ("FONTNAME", (1, 0), (1, -1), "Helvetica"),
+            ("FONTSIZE", (0, 0), (-1, -1), 8),
+            ("TEXTCOLOR", (0, 0), (0, -1), MUTED),
+            ("TEXTCOLOR", (1, 0), (1, -1), DARK),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+            ("TOPPADDING", (0, 0), (-1, -1), 2),
+            ("LINEBELOW", (0, 0), (-1, -2), 0.2, BORDER),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ]))
+        story.append(Spacer(1, 1 * mm))
+        story.append(job_table)
+
+        root_cause = job.get("root_cause")
+        if root_cause:
+            story.append(Spacer(1, 2 * mm))
+            story.append(Paragraph("<b>Root Cause:</b>", styles["label"]))
+            story.append(Paragraph(root_cause[:300], styles["mono_small"]))
+
+    story.append(Spacer(1, 10 * mm))
+    story.extend(_footer_section(styles))
+    return story
     output_dir = job.get("output_dir")
     if not output_dir:
         return None

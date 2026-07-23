@@ -19,8 +19,15 @@ function BatchPageInner() {
   const { user, logout } = useAuth();
   const [jobs, setJobs] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [exporting, setExporting] = useState(false);
 
   const ids = (searchParams.get("ids") || "").split(",").filter(Boolean);
+
+  const handleDownloadAll = () => {
+    if (exporting) return;
+    setExporting(true);
+    jobsAPI.downloadBatchReport(ids).finally(() => setExporting(false));
+  };
 
   useEffect(() => {
     if (!ids.length) return;
@@ -63,9 +70,16 @@ function BatchPageInner() {
               {jobs.length > 0 ? `${done} of ${jobs.length} complete` : loading ? "Loading…" : "No jobs found"}
             </p>
           </div>
+          <div style={{ display: "flex", gap: 8 }}>
           <button className="btn btn-secondary btn-sm" onClick={() => router.push("/dashboard")}>
             Back to Dashboard
           </button>
+          {done === jobs.length && jobs.length > 0 && (
+            <button className="btn btn-primary btn-sm" onClick={handleDownloadAll} disabled={exporting}>
+              {exporting ? "Generating PDF…" : "Download All PDF"}
+            </button>
+          )}
+          </div>
         </div>
 
         {loading && <div style={{ display: "flex", justifyContent: "center", padding: 40 }}><div className="spinner" /></div>}

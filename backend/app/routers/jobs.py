@@ -7,7 +7,7 @@ from app.models.job import JobOut, RunResponse
 from app.models.batch import BatchRunRequest, BatchRunResponse
 from app.services.job_service import run_pipeline_job, run_batch_jobs, rerun_job, get_job_detail, get_job_list
 from app.services.auth_service import get_current_analyst
-from app.services.pdf_service import generate_job_report
+from app.services.pdf_service import generate_job_report, generate_batch_report
 from app.websocket.manager import manager
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
@@ -50,6 +50,27 @@ def get_job(job_id: str, user: dict = Depends(get_current_analyst)):
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return JobOut(**job)
+
+
+@router.post("/batch-report")
+def download_batch_report(job_ids: str, user: dict = Depends(get_current_analyst)):
+    ids = [jid.strip() for jid in job_ids.split(",") if jid.strip()]
+    if not ids:
+        raise HTTPException(status_code=400, detail="No job IDs provided")
+    try:
+        pdf_bytes = generate_batch_report(ids)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"PDF generation failed: {e}")
+
+    from datetime import datetime, timezone
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="batch_report_{ts}.pdf"'},
+    )
 
 
 @router.get("/{job_id}/report")
