@@ -8,64 +8,60 @@ wheels/
 
 # Virtual environments
 .venv/
-env/
 venv/
+env/
 backend/.venv/
 
-# Secrets — never commit
+# Environment
 .env
+.env.local
+.env.save
 frontend-next/.env
 frontend-next/.env.production
 
-# Backend runtime data
-backend/db/
+# Logs
+*.log
+nohup.out
+**/nohup.out
+
+# Generated output
+output/
+outputs/
+backend/outputs/
 backend/logs/
 backend/uploads/
-backend/outputs/
 backend/pdf_reports/
 
-# Root-level runtime data
+# Database
+backend/db/
 db/
-logs/
-outputs/
-uploads/
-pdf_reports/
-
-# Database files
 *.db
 *.sqlite
 *.sqlite3
 
-# Frontend runtime data
+# Next.js
+.next/
 frontend-next/.next/
 frontend-next/out/
-.next/
 
 # Node
 node_modules/
 frontend-next/node_modules/
 
-# Sample log files and data
-*.log
-*.docx
-*.pdf
-*.txt
-
-# IDE / editor
-.claude/
+# IDE
 .vscode/
 .idea/
+.claude/
 .DS_Store
 Thumbs.db
 *.swp
 *.swo
 
-# Python version
+# Python cache
+.pytest_cache/
+.mypy_cache/
+.cache/
 .python-version
 
-# Stray root files (from Windows sync)
-package-lock.json
-package.json
-
-# Binary artifacts
+# Binary
 datamap.jar
