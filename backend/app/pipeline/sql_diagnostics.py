@@ -376,6 +376,216 @@ def _verify_where_combination(
 # SQL STRUCTURE PARSER
 # ──────────────────────────────────────────────────────────────────────────────
 
+def _has_top_level_derived_table(sql: str) -> bool:
+    """Detect if the outermost FROM clause starts with a subquery: FROM (...)."""
+    clean = re.sub(r'/\*.*?\*/', '', sql, flags=re.DOTALL).strip()
+    from_pos = _find_top_level_clause("FROM", clean)
+    if from_pos == -1:
+        return False
+    after_from = clean[from_pos + 4:].lstrip()
+    return after_from.startswith("(")
+
+
+def _extract_derived_table_inner_sql(sql: str) -> str | None:
+    """Extract the inner subquery SQL from SELECT ... FROM (inner_sql) alias WHERE ..."""
+    clean = re.sub(r'/\*.*?\*/', '', sql, flags=re.DOTALL).strip()
+    from_pos = _find_top_level_clause("FROM", clean)
+    if from_pos == -1:
+        return None
+    search_start = from_pos + 4
+    i = search_start
+    while i < len(clean) and clean[i] in (" ", "\t", "\n", "\r"):
+        i += 1
+    if i >= len(clean) or clean[i] != "(":
+        return None
+    depth = 0
+    inner_start = i + 1
+    while i < len(clean):
+        if clean[i] == "(":
+            depth += 1
+        elif clean[i] == ")":
+            depth -= 1
+            if depth == 0:
+                return clean[inner_start:i].strip()
+        i += 1
+    return None
+
+
+def _sample_inner_query_data(conn, inner_sql: str, metadata: dict, run_logger=None, step=6, known_row_count: int = None) -> dict:
+    """Sample data from the inner subquery to inspect column values for threshold analysis."""
+    result = {"sample_rows": [], "column_stats": {}, "row_count": 0}
+    try:
+        total_rows = known_row_count
+        if total_rows is None:
+            count_sql = f"SELECT COUNT(*) FROM (\n{inner_sql}\n) t"
+            if run_logger:
+                run_logger.log_sql(step, "sample_inner_count", count_sql)
+            cursor = conn.cursor()
+            cursor.execute(count_sql)
+            total_rows = cursor.fetchone()[0]
+            cursor.close()
+        result["row_count"] = total_rows
+        if total_rows == 0:
+            return result
+        cursor = conn.cursor()
+        try:
+            cursor.execute(f"SELECT * FROM (\n{inner_sql}\n) t FETCH FIRST 10 ROWS ONLY")
+        except Exception:
+            try:
+                cursor.execute(f"SELECT * FROM (\n{inner_sql}\n) t ORDER BY 1 FETCH FIRST 10 ROWS ONLY")
+            except Exception as e2:
+                logger.debug("sample query failed: %s", e2)
+                if run_logger:
+                    run_logger.log(step, f"  Sample query failed: {e2}")
+                cursor.close()
+                return result
+        columns = [desc[0] for desc in cursor.description]
+        rows = cursor.fetchall()
+        def _json_safe(v):
+            if hasattr(v, 'isoformat'):
+                return v.isoformat()
+            if hasattr(v, 'strftime'):
+                return v.strftime('%Y-%m-%d')
+            return v
+        result["sample_rows"] = [{k: _json_safe(v) for k, v in zip(columns, row)} for row in rows]
+        numeric_cols = []
+        type_debug = []
+        for desc in cursor.description:
+            type_code = desc[1]
+            type_debug.append(f"{desc[0]}={type_code}")
+            if type_code is not None:
+                type_name = str(type_code).upper()
+                if any(kw in type_name for kw in ("NUMBER", "INT", "FLOAT", "DECIMAL", "NUMERIC", "DOUBLE")):
+                    numeric_cols.append(desc[0])
+        if run_logger and type_debug:
+            run_logger.log(step, f"  Column types: {', '.join(type_debug)}")
+        if numeric_cols:
+            col_list = ", ".join([
+                f"MIN({c}) AS min_{c}, MAX({c}) AS max_{c}, AVG({c}) AS avg_{c}"
+                for c in numeric_cols
+            ])
+            stats_sql = f"SELECT {col_list} FROM (\n{inner_sql}\n) t"
+            if run_logger:
+                run_logger.log_sql(step, "sample_inner_stats", stats_sql)
+            cursor.execute(stats_sql)
+            stats_row = cursor.fetchone()
+            idx = 0
+            for c in numeric_cols:
+                result["column_stats"][c] = {
+                    "min": stats_row[idx],
+                    "max": stats_row[idx + 1],
+                    "avg": stats_row[idx + 2],
+                }
+                idx += 3
+        cursor.close()
+        if run_logger:
+            run_logger.log(step, f"  Data sample: {total_rows:,} total rows, {len(numeric_cols)} numeric columns analyzed")
+    except Exception as e:
+        logger.debug("sample_inner_query_data error: %s", e)
+        if run_logger:
+            run_logger.log(step, f"  Data sample failed: {e}")
+    return result
+
+
+def _check_threshold_kill(sample_data: dict, outer_sql: str, run_logger=None, step=6) -> dict | None:
+    """Check if threshold conditions in the outer WHERE clause kill all rows from the inner query."""
+    if not sample_data or sample_data.get("row_count", 0) == 0:
+        msg = "  Threshold check SKIPPED: no sample data or 0 rows"
+        if run_logger:
+            run_logger.log(step, msg)
+        else:
+            print(msg)
+        return None
+    where_pos = _find_top_level_where(outer_sql)
+    if where_pos == -1:
+        msg = "  Threshold check SKIPPED: no WHERE clause found"
+        if run_logger:
+            run_logger.log(step, msg)
+        else:
+            print(msg)
+        return None
+    where_block = outer_sql[where_pos + 5:].strip()
+    order_pos = _find_top_level_clause("ORDER BY", where_block)
+    if order_pos != -1:
+        where_block = where_block[:order_pos].strip()
+    conditions = _split_and_conditions(where_block)
+    msg = f"  Threshold check: {len(conditions)} conditions, column_stats keys: {list(sample_data.get('column_stats', {}).keys())}"
+    if run_logger:
+        run_logger.log(step, msg)
+    else:
+        print(msg)
+    threshold_patterns = [
+        (re.compile(r'(\w+(?:\.\w+)?)\s*>=\s*(\d+)', re.IGNORECASE), ">="),
+        (re.compile(r'(\w+(?:\.\w+)?)\s*<=\s*(\d+)', re.IGNORECASE), "<="),
+        (re.compile(r'(\w+(?:\.\w+)?)\s*>\s*(\d+)', re.IGNORECASE), ">"),
+        (re.compile(r'(\w+(?:\.\w+)?)\s*<\s*(\d+)', re.IGNORECASE), "<"),
+    ]
+    killers = []
+    seen = set()
+    stats = sample_data.get("column_stats", {})
+    stats_upper = {k.upper(): v for k, v in stats.items()}
+    for cond in conditions:
+        for pat, op in threshold_patterns:
+            for m in pat.finditer(cond):
+                col_name = m.group(1).split(".")[-1]
+                threshold_val = float(m.group(2))
+                col_stats = stats_upper.get(col_name.upper())
+                if run_logger:
+                    run_logger.log(step, f"  Regex match: {col_name} {op} {threshold_val}, stats_lookup={col_name.upper()}, found={col_stats is not None}")
+                else:
+                    print(f"  Regex match: {col_name} {op} {threshold_val}, stats_lookup={col_name.upper()}, found={col_stats is not None}")
+                if col_stats:
+                    max_val = col_stats.get("max")
+                    if max_val is not None:
+                        killer_key = (col_name.upper(), op, threshold_val)
+                        if killer_key in seen:
+                            continue
+                        seen.add(killer_key)
+                        if (op in (">=", ">") and max_val < threshold_val) or \
+                           (op in ("<=", "<") and col_stats.get("min", 0) > threshold_val):
+                            killers.append({
+                                "condition": cond.strip(),
+                                "column": col_name,
+                                "threshold": threshold_val,
+                                "actual_max": max_val,
+                                "actual_min": col_stats.get("min"),
+                                "operator": op,
+                            })
+                            if run_logger:
+                                run_logger.log(step, f"  KILLER FOUND: {col_name} {op} {threshold_val} (actual max={max_val})")
+                            else:
+                                print(f"  KILLER FOUND: {col_name} {op} {threshold_val} (actual max={max_val})")
+    if killers:
+        return {
+            "failure_type": "THRESHOLD_KILL",
+            "killers": killers,
+            "sample_rows": sample_data.get("sample_rows", [])[:5],
+            "column_stats": sample_data.get("column_stats", {}),
+            "total_inner_rows": sample_data.get("row_count", 0),
+        }
+    msg = f"  No threshold killers found after checking {len(conditions)} conditions"
+    if run_logger:
+        run_logger.log(step, msg)
+    else:
+        print(msg)
+    return None
+
+
+def _find_top_level_where(sql: str) -> int:
+    """Find the outermost WHERE clause. For derived-table queries (FROM (...)),
+    the outer WHERE is at depth 1, not depth 0."""
+    clean = re.sub(r'/\*.*?\*/', '', sql, flags=re.DOTALL).strip()
+    pattern = re.compile(r'\bWHERE\b', re.IGNORECASE)
+    found_depth1 = -1
+    for m in pattern.finditer(clean):
+        depth = clean[:m.start()].count('(') - clean[:m.start()].count(')')
+        if depth == 0:
+            return m.start()
+        if depth == 1 and found_depth1 == -1:
+            found_depth1 = m.start()
+    return found_depth1
+
+
 def _find_top_level_clause(keyword: str, text: str) -> int:
     """Finds a top-level SQL keyword (depth 0), skips occurrences inside subqueries."""
     pattern = re.compile(rf'\b{keyword}\b', re.IGNORECASE)
@@ -3321,6 +3531,23 @@ def eliminate_conditions_and_retry(
     else:
         print("\n  --- Phase 3: Removing ALL conditions ---")
     bare_count = 0
+
+    # For derived-table queries (SELECT ... FROM (subquery) alias WHERE ...),
+    # extract the inner subquery and count it directly instead of using the
+    # broken regex that only captures up to the first FROM keyword.
+    if _has_top_level_derived_table(sql):
+        inner_sql = _extract_derived_table_inner_sql(sql)
+        if inner_sql:
+            bare_count = execute_count(conn, inner_sql, metadata, run_logger=run_logger, step=6, label="bare_select_from_derived")
+            result["rows_after_elimination"] = bare_count
+            if bare_count > 0:
+                result["failure_type"] = "WHERE_OR_HAVING_COMBINATION"
+                result["elimination_phase"] = "ALL"
+                result["failure_condition"] = "Combination of WHERE and HAVING conditions on derived table"
+                result["likely_cause"] = f"Inner subquery returns {bare_count:,} rows but outer WHERE conditions eliminate all of them."
+                return result
+
+    # Fallback for non-derived-table queries: strip WHERE/HAVING with regex
     select_match = re.match(r'(SELECT\b.*?\bFROM\b\s+.*?)$', sql, re.IGNORECASE | re.DOTALL)
     if select_match:
         bare_count = execute_count(conn, select_match.group(1).strip(), metadata, run_logger=run_logger, step=6, label="bare_select_from")
@@ -3333,7 +3560,10 @@ def eliminate_conditions_and_retry(
             return result
 
     # Phase 4: JOIN elimination — try each JOIN to find the killer
-    if parsed["joins"]:
+    # Skip for derived-table queries (outer FROM wraps a subquery) because
+    # the JOIN logic is inside the inner subquery, not at the outer level.
+    # Stripping JOINs from a "FROM (...)" produces invalid SQL.
+    if parsed["joins"] and not _has_top_level_derived_table(sql):
         if run_logger:
             run_logger.log(6, "--- Phase 4: Eliminating JOIN conditions ---")
         else:
@@ -3386,6 +3616,7 @@ def diagnose_inner_query_sequence(
     """Executes each inner query one by one from innermost to outermost."""
     results = []
     created_views = []
+    last_healthy = None  # Tracks {"sql": str, "count": int, "view_name": str} of last healthy inner query
     for iq in inner_queries:
         view_name = iq["view_name"]
         sql = iq["sql"]
@@ -3474,6 +3705,7 @@ def diagnose_inner_query_sequence(
                     run_logger.log(6, f"  ✅ {view_name} is healthy — {direct_count:,} rows")
                 else:
                     print(f"  ✅ {view_name} is healthy — {direct_count:,} rows")
+                last_healthy = {"sql": sql, "count": direct_count, "view_name": view_name, "iq": iq}
                 continue
             # Direct count returned 0 — proceed to condition elimination
             count = 0
@@ -3482,6 +3714,7 @@ def diagnose_inner_query_sequence(
                 run_logger.log(6, f"  ✅ {view_name} is healthy — {count:,} rows")
             else:
                 print(f"  ✅ {view_name} is healthy — {count:,} rows")
+            last_healthy = {"sql": sql, "count": count, "view_name": view_name, "iq": iq}
             for prev in results:
                 if prev.get("inner_query") and prev["inner_query"]["id"] < iq["id"]:
                     prev["data_found_at_outer_level"] = iq["id"]
@@ -3491,6 +3724,66 @@ def diagnose_inner_query_sequence(
             run_logger.log(6, f"  ⚠️ {view_name} returns 0 rows — starting condition elimination...")
         else:
             print(f"  ⚠️ {view_name} returns 0 rows — starting condition elimination...")
+
+        # Pre-check: if this query wraps a derived table and the last healthy
+        # inner query had data, sample it and check for threshold kills.
+        if _has_top_level_derived_table(sql) and last_healthy:
+            prev_iq = last_healthy["iq"]
+            prev_sql = last_healthy["sql"]
+            prev_count = last_healthy["count"]
+            if prev_sql and prev_count > 0:
+                if run_logger:
+                    run_logger.log(6, f"  Sampling data from {prev_iq['view_name']} ({prev_iq.get('context', '')}) before elimination...")
+                sample_data = _sample_inner_query_data(conn, prev_sql, metadata, run_logger=run_logger, known_row_count=prev_count)
+                threshold_info = _check_threshold_kill(sample_data, sql, run_logger=run_logger)
+                if threshold_info:
+                    killers_summary = ", ".join([
+                        f"{k['column']} {k['operator']} {k['threshold']} (actual max={k['actual_max']})"
+                        for k in threshold_info["killers"]
+                    ])
+                    diag = {
+                        "failure_type": "THRESHOLD_KILL",
+                        "failure_condition": killers_summary,
+                        "rows_after_elimination": 0,
+                        "elimination_phase": "OUTER_WHERE",
+                        "likely_cause": (
+                            f"Inner query {prev_iq['view_name']} returns {prev_count:,} rows "
+                            f"but outer WHERE thresholds eliminate all. {killers_summary}."
+                        ),
+                        "threshold_suggestions": [],
+                        "data_availability": {
+                            "inner_query_name": prev_iq["view_name"],
+                            "inner_query_rows": prev_count,
+                            "sample_rows": threshold_info["sample_rows"],
+                            "column_stats": threshold_info["column_stats"],
+                            "threshold_killers": threshold_info["killers"],
+                        },
+                        "having_analysis": [],
+                        "where_analysis": [],
+                        "condition_line_number": None,
+                    }
+                    result = {
+                        "cte_name": f"final_query/{view_name}",
+                        "failure_type": diag["failure_type"],
+                        "failure_condition": diag["failure_condition"],
+                        "rows_before": 0, "rows_after": diag["rows_after_elimination"],
+                        "likely_cause": diag["likely_cause"],
+                        "threshold_suggestions": diag.get("threshold_suggestions", []),
+                        "data_availability": diag.get("data_availability", {}),
+                        "inner_query": iq,
+                        "elimination_phase": diag["elimination_phase"],
+                        "having_analysis": diag.get("having_analysis", []),
+                        "where_analysis": diag.get("where_analysis", []),
+                        "condition_line_number": diag.get("condition_line_number"),
+                        "created_views": list(created_views),
+                    }
+                    results.append(result)
+                    if run_logger:
+                        run_logger.log(6, f"  Threshold kill detected: {killers_summary}")
+                    else:
+                        print(f"  Threshold kill detected: {killers_summary}")
+                    break
+
         diag = eliminate_conditions_and_retry(
             conn, sql, metadata, threshold_bindings, threshold_config,
             param_mapping, run_logger=run_logger,
@@ -4051,7 +4344,23 @@ def run_granular_cte_diagnostics(
                 run_logger.log(6, f"Rows After: {ra:,}")
             da = result.get("data_availability", {})
             if da:
-                if da.get("explanation"):
+                if result.get("failure_type") == "THRESHOLD_KILL":
+                    inner_name = da.get("inner_query_name", "N/A")
+                    inner_rows = da.get("inner_query_rows", 0)
+                    run_logger.log(6, f"Inner query ({inner_name}): {inner_rows:,} rows")
+                    for killer in da.get("threshold_killers", []):
+                        run_logger.log(6, f"  Killer: {killer['column']} {killer['operator']} {killer['threshold']} (actual max={killer.get('actual_max', '?')})")
+                    stats = da.get("column_stats", {})
+                    if stats:
+                        for col, s in stats.items():
+                            run_logger.log(6, f"  {col}: min={s.get('min','?')}, max={s.get('max','?')}, avg={s.get('avg','?')}")
+                    sample = da.get("sample_rows", [])
+                    if sample:
+                        run_logger.log(6, f"Sample rows (first {len(sample)}):")
+                        for i, row in enumerate(sample):
+                            vals = ", ".join([f"{k}={v}" for k, v in list(row.items())[:8]])
+                            run_logger.log(6, f"  [{i+1}] {vals}")
+                elif da.get("explanation"):
                     run_logger.log(6, da["explanation"])
                 if da.get("rows_without_outer_where") is not None:
                     run_logger.log(6, f"Rows without outer WHERE: {da['rows_without_outer_where']:,}")
@@ -4182,6 +4491,29 @@ def _print_root_cause(cte_name: str, result: dict):
 
     da = result.get("data_availability", {})
     if da:
+        # THRESHOLD_KILL: show column stats and killer details
+        if result.get("failure_type") == "THRESHOLD_KILL":
+            print("\n  THRESHOLD KILL DETAILS:")
+            inner_name = da.get("inner_query_name", "N/A")
+            inner_rows = da.get("inner_query_rows", 0)
+            print(f"    Inner query ({inner_name}): {inner_rows:,} rows")
+            for killer in da.get("threshold_killers", []):
+                print(f"\n    Killer: {killer['column']} {killer['operator']} {killer['threshold']}")
+                print(f"      Actual max: {killer.get('actual_max', 'N/A')}")
+                print(f"      Actual min: {killer.get('actual_min', 'N/A')}")
+            stats = da.get("column_stats", {})
+            if stats:
+                print("\n    Column statistics:")
+                for col, s in stats.items():
+                    print(f"      {col}: min={s.get('min','?')}, max={s.get('max','?')}, avg={s.get('avg','?')}")
+            sample = da.get("sample_rows", [])
+            if sample:
+                print(f"\n    Sample rows (first {len(sample)}):")
+                for i, row in enumerate(sample):
+                    vals = ", ".join([f"{k}={v}" for k, v in list(row.items())[:8]])
+                    print(f"      [{i+1}] {vals}")
+            print("\n    💡 Consider lowering the threshold or checking if business date is correct.")
+            return  # Skip generic data availability for threshold kills
         print("\n  DATA AVAILABILITY:")
         if da.get("explanation"):
             print(f"    {da['explanation']}")

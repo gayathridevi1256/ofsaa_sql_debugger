@@ -504,56 +504,37 @@ def _build_batch_story(jobs: list[dict], styles: dict) -> list:
     ]))
     story.append(table)
 
-    story.append(Spacer(1, 8 * mm))
-    story.append(Paragraph("Individual Job Results", styles["h2"]))
+    story.append(Spacer(1, 12 * mm))
+    story.append(Paragraph("Detailed Job Reports", styles["h2"]))
 
     for idx, job in enumerate(jobs, 1):
         if idx > 1:
-            story.append(Spacer(1, 4 * mm))
-            story.append(HRFlowable(width="100%", thickness=0.3, color=BORDER, spaceBefore=2, spaceAfter=2))
+            story.append(Spacer(1, 8 * mm))
+            story.append(HRFlowable(width="100%", thickness=0.5, color=ACCENT, spaceBefore=4, spaceAfter=4))
 
-        scenario = job.get("scenario_name") or job.get("log_filename") or "Unknown"
-        status = job.get("status", "unknown").upper()
-        alerts = "Yes" if job.get("alerts_generated") else "No"
-        status_color = STATUS_COLORS.get(job.get("status", ""), "#64748b")
+        metadata = _load_metadata(job)
+        story.append(Spacer(1, 4 * mm))
+        story.extend(_summary_section(job, metadata, styles))
 
-        job_header = [
-            Paragraph(f"<b>#{idx} {scenario}</b>", styles["h3"]),
-        ]
-        story.extend(job_header)
+        story.append(Spacer(1, 4 * mm))
+        story.extend(_steps_section(job, styles))
 
-        job_data = [
-            ["Job ID", (job.get("job_id", "") or "")[:16]],
-            ["Status", Paragraph(f"<font color='{status_color}'>● {status}</font>", styles["body"])],
-            ["Alerts", alerts],
-            ["Batch Date", job.get("batch_date") or "N/A"],
-            ["Log File", job.get("log_filename", "N/A")],
-        ]
+        cte_results = _parse_json(job.get("cte_results_json"))
+        if cte_results:
+            story.append(Spacer(1, 6 * mm))
+            story.extend(_cte_waterfall_section(cte_results, styles))
 
-        job_table = Table(job_data, colWidths=[100, 380], hAlign="LEFT")
-        job_table.setStyle(TableStyle([
-            ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
-            ("FONTNAME", (1, 0), (1, -1), "Helvetica"),
-            ("FONTSIZE", (0, 0), (-1, -1), 8),
-            ("TEXTCOLOR", (0, 0), (0, -1), MUTED),
-            ("TEXTCOLOR", (1, 0), (1, -1), DARK),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
-            ("TOPPADDING", (0, 0), (-1, -1), 2),
-            ("LINEBELOW", (0, 0), (-1, -2), 0.2, BORDER),
-            ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ]))
-        story.append(Spacer(1, 1 * mm))
-        story.append(job_table)
-
-        root_cause = job.get("root_cause")
-        if root_cause:
-            story.append(Spacer(1, 2 * mm))
-            story.append(Paragraph("<b>Root Cause:</b>", styles["label"]))
-            story.append(Paragraph(root_cause[:300], styles["mono_small"]))
+        diagnostic_results = _parse_json(job.get("result_json"))
+        if diagnostic_results:
+            story.append(Spacer(1, 6 * mm))
+            story.extend(_root_cause_section(job, diagnostic_results, styles))
 
     story.append(Spacer(1, 10 * mm))
     story.extend(_footer_section(styles))
     return story
+
+
+def _load_metadata(job: dict) -> dict | None:
     output_dir = job.get("output_dir")
     if not output_dir:
         return None
