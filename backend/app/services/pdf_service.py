@@ -366,6 +366,12 @@ def _root_cause_section(job: dict, results: list, styles: dict) -> list:
         elements.append(Paragraph(f"<b>Summary:</b> {root_cause[:400]}", styles["body"]))
         elements.append(Spacer(1, 2 * mm))
 
+    ai_recommendation = job.get("ai_recommendation")
+    if ai_recommendation:
+        rec_html = ai_recommendation.replace("\n", "<br/>")
+        elements.append(Paragraph(f"<b>AI Recommendation:</b><br/>{rec_html}", styles["body"]))
+        elements.append(Spacer(1, 3 * mm))
+
     for result in results:
         cte_name = result.get("cte_name", "Unknown CTE")
         failure_type = result.get("failure_type", "unknown")

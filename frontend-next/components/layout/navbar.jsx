@@ -10,7 +10,12 @@ export function Navbar({ user, onLogout, hideUser }) {
           <Link href="/dashboard" style={{ fontWeight: 700, fontSize: "1rem", color: "var(--text-primary)", textDecoration: "none" }}>
             Scenario Debugger
           </Link>
-          <span style={{ fontSize: "0.7rem", color: "var(--text-muted)" }}>v1.0</span>
+          <span style={{ fontSize: "0.7rem", color: "var(--text-muted)" }}>v2.0</span>
+          {!hideUser && (
+            <Link href="/threshold-tuning" style={{ fontSize: "0.8rem", color: "var(--text-secondary)", textDecoration: "none", marginLeft: 12 }}>
+              Threshold Tuning
+            </Link>
+          )}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           {!hideUser && user && (

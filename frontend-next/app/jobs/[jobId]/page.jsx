@@ -31,6 +31,7 @@ export default function JobPage() {
   const [jobStatus, setJobStatus] = useState(null);
   const [alertsGenerated, setAlertsGenerated] = useState(null);
   const [rootCause, setRootCause] = useState(null);
+  const [aiRecommendation, setAiRecommendation] = useState(null);
   const [diagnosticResults, setDiagnosticResults] = useState([]);
   const [cteResults, setCteResults] = useState([]);
   const [wsStatus, setWsStatus] = useState("connecting");
@@ -52,6 +53,7 @@ export default function JobPage() {
         if (data.status === "completed") {
           setAlertsGenerated(data.alerts_generated === 1);
           setRootCause(data.root_cause);
+          setAiRecommendation(data.ai_recommendation);
           if (data.result_json) {
             try { setDiagnosticResults(JSON.parse(data.result_json)); } catch {}
           }
@@ -83,6 +85,7 @@ export default function JobPage() {
           setJobStatus("completed");
           setAlertsGenerated(!!msg.alerts_generated);
           setRootCause(msg.root_cause);
+          setAiRecommendation(msg.ai_recommendation);
           if (msg.results) setDiagnosticResults(msg.results);
           if (msg.cte_results) setCteResults(msg.cte_results);
           break;
@@ -156,7 +159,14 @@ export default function JobPage() {
           </div>
         )}
         {showResults && <CteWaterfall cteResults={cteResults} />}
-        {showResults && <RootCauseCard rootCause={rootCause} results={diagnosticResults} />}
+        {showResults && (
+          <RootCauseCard
+            rootCause={rootCause}
+            results={diagnosticResults}
+            aiRecommendation={aiRecommendation}
+            logFilePath={job.log_file_path}
+          />
+        )}
         <div style={{ height: 64 }} />
       </main>
     </div>

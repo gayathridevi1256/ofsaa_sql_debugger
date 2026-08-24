@@ -16,6 +16,7 @@ class JobOut(BaseModel):
     job_id: str
     user_id: int
     log_filename: str
+    log_file_path: str | None = None
     scenario_name: str | None = None
     batch_date: str | None = None
     status: str
@@ -26,6 +27,7 @@ class JobOut(BaseModel):
     output_dir: str | None = None
     alerts_generated: int = 0
     root_cause: str | None = None
+    ai_recommendation: str | None = None
     result_json: str | None = None
     cte_results_json: str | None = None
     username: str | None = None
