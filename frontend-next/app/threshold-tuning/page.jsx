@@ -1,12 +1,12 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { useAuth } from "@/hooks/use-auth";
 import { Navbar } from "@/components/layout/navbar";
 import { filesAPI, thresholdTuningAPI, getErrorMessage } from "@/lib/api-client";
 
-export default function ThresholdTuningPage() {
+function ThresholdTuningPageInner() {
   const { user, logout } = useAuth();
   const searchParams = useSearchParams();
   const incomingFilePath = searchParams.get("file_path");
@@ -117,40 +117,30 @@ export default function ThresholdTuningPage() {
     <div className="page">
       <Navbar user={user} onLogout={logout} />
       <main className="page-content">
-        <div className="animate-fade-in">
-          <h1 style={{ fontSize: "1.5rem", fontWeight: 700, marginBottom: 4 }}>Threshold Tuning</h1>
-          <p style={{ color: "var(--text-muted)", fontSize: "0.875rem", marginBottom: 32 }}>
-            Upload a scenario log to see its currently configured threshold values.
-          </p>
+        <div className="animate-fade-in page-header">
+          <div>
+            <p className="eyebrow-label">Threshold tuning</p>
+            <h1 className="page-title">Calibrate configured thresholds</h1>
+            <p className="page-subtitle">Upload a scenario log to see its currently configured threshold values.</p>
+          </div>
         </div>
 
         {fromJob && (
-          <div
-            className="card animate-fade-in"
-            style={{
-              marginBottom: 32, borderLeft: "4px solid var(--warning, #f59e0b)",
-              fontSize: "0.85rem", display: "flex", alignItems: "center", gap: 10,
-            }}
-          >
+          <div className="alert alert-info animate-fade-in" style={{ marginBottom: 28 }}>
             <span>🎯</span>
-            <span>Loaded straight from a scenario debugging job's threshold-kill diagnosis — no need to re-upload the log file.</span>
+            <span>Loaded straight from a scenario debugging job&rsquo;s threshold-kill diagnosis — no need to re-upload the log file.</span>
           </div>
         )}
 
-        <div className="card animate-fade-in" style={{ marginBottom: 32 }}>
-          <h2 style={{ fontSize: "1rem", fontWeight: 600, marginBottom: 12 }}>Upload Log File</h2>
-          {error && <div className="alert alert-error" style={{ marginBottom: 12 }}>{error}</div>}
+        <div className="card animate-fade-in" style={{ marginBottom: 28 }}>
+          <h2 style={{ fontFamily: "var(--font-display)", fontSize: "1.05rem", fontWeight: 700, marginBottom: 14 }}>Upload Log File</h2>
+          {error && <div className="alert alert-error" style={{ marginBottom: 14 }}>{error}</div>}
           <div
             onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
             onDragLeave={() => setDragging(false)}
             onDrop={handleDrop}
             onClick={() => fileRef.current?.click()}
-            style={{
-              border: `2px dashed ${dragging ? "var(--accent)" : "var(--border)"}`,
-              borderRadius: "var(--radius-md)", padding: 32, textAlign: "center",
-              background: dragging ? "var(--accent-subtle)" : "var(--bg-elevated)",
-              cursor: "pointer", transition: "all 0.15s",
-            }}
+            className={`dropzone${dragging ? " dragging" : ""}`}
           >
             <input
               ref={fileRef}
@@ -161,16 +151,20 @@ export default function ThresholdTuningPage() {
             />
             {uploading ? (
               <div>
-                <div className="spinner" style={{ margin: "0 auto 12px" }} />
-                <div style={{ fontSize: "0.875rem", color: "var(--text-muted)" }}>
+                <div className="spinner" style={{ margin: "0 auto 14px" }} />
+                <div style={{ fontSize: "0.875rem", color: "var(--text-secondary)", fontWeight: 500 }}>
                   Setting batch date and executing the dataset query — this can take 30-60s…
                 </div>
               </div>
             ) : (
               <>
-                <div style={{ fontSize: "2rem", marginBottom: 8 }}>📊</div>
-                <div style={{ fontWeight: 600 }}>Drop a .log file here or click to browse</div>
-                <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginTop: 4 }}>Max 50MB</div>
+                <div className="dropzone-icon">
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+                    <path d="M4 19h16M7 15l3-8 3 6 2-4 2 6" stroke="#fff" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                </div>
+                <div style={{ fontWeight: 700, color: "var(--text-primary)" }}>Drop a .log file here or click to browse</div>
+                <div style={{ fontSize: "0.78rem", color: "var(--text-muted)", marginTop: 5 }}>Max 50MB</div>
               </>
             )}
           </div>
@@ -201,6 +195,14 @@ export default function ThresholdTuningPage() {
         <div style={{ height: 64 }} />
       </main>
     </div>
+  );
+}
+
+export default function ThresholdTuningPage() {
+  return (
+    <Suspense fallback={<div style={{ display: "flex", justifyContent: "center", padding: 80 }}><div className="spinner" /></div>}>
+      <ThresholdTuningPageInner />
+    </Suspense>
   );
 }
 
