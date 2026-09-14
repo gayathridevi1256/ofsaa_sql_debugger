@@ -1,10 +1,23 @@
 """Central configuration — all settings from environment/.env."""
 
 import os
+import sys
 import logging
 import logging.handlers
 from pathlib import Path
 from dotenv import load_dotenv
+
+# Pipeline modules print emoji/Unicode status markers (e.g. "✅"). On Windows,
+# stdout/stderr default to the console's legacy codepage (cp1252/cp437) rather
+# than UTF-8, which raises UnicodeEncodeError the moment such a character is
+# printed — this never surfaces on the Linux deployment target, only in local
+# Windows dev. Force UTF-8 on both streams so pipeline output never crashes a job.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
 
 load_dotenv()
 
@@ -23,7 +36,7 @@ JWT_ALGORITHM = "HS256"
 JWT_EXPIRY_MINUTES = int(os.getenv("JWT_EXPIRY_MINUTES", "480"))
 
 APP_NAME = os.getenv("APP_NAME", "OFSAA Scenario Debugger")
-APP_VERSION = "1.0.0"
+APP_VERSION = "2.0.0"
 API_HOST = os.getenv("API_HOST", "127.0.0.1")
 API_PORT = int(os.getenv("API_PORT", "8000"))
 CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost:3000").split(",")
@@ -34,6 +47,16 @@ PIPELINE_DIR = Path(os.getenv("PIPELINE_DIR", str(Path(__file__).parent / "pipel
 PIPELINE_TIMEOUT_SECONDS = int(os.getenv("PIPELINE_TIMEOUT_SECONDS", "300"))
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+
+# AI recommendation — 2-line suggestion generated from the diagnosed root cause.
+# Uses a local Ollama server (https://ollama.com) so no data leaves the box and
+# there's no per-call API cost. If Ollama is unreachable, the pipeline still
+# completes normally — the recommendation is simply omitted.
+AI_RECOMMENDATION_ENABLED = os.getenv("AI_RECOMMENDATION_ENABLED", "true").lower() == "true"
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
+OLLAMA_TIMEOUT_S = int(os.getenv("OLLAMA_TIMEOUT_S", "90"))  # cold model load (~40s) + generation on CPU-only hardware
+
 LDAP_ENABLED = os.getenv("LDAP_ENABLED", "false").lower() == "true"
 LDAP_SERVER = os.getenv("LDAP_SERVER", "")
 LDAP_BASE_DN = os.getenv("LDAP_BASE_DN", "")

@@ -13,6 +13,7 @@ from pathlib import Path
 from app.config import OUTPUTS_DIR, PIPELINE_DIR, PIPELINE_TIMEOUT_SECONDS
 from app.database.job_repo import update_job_status, update_step_status
 from app.database.audit_repo import audit
+from app.services.ai_recommendation_service import generate_recommendation
 
 logger = logging.getLogger(__name__)
 
@@ -303,7 +304,15 @@ def _step_execute_resolved_function(state: dict) -> str:
 def _step_set_batch_date(state: dict) -> str:
     from set_batch_date import set_batch_date
 
-    set_batch_date()
+    # Pass this job's own output_dir explicitly — set_batch_date's
+    # load_metadata() defaults to "whatever directory is most recently
+    # modified anywhere under OUTPUT_BASE_PATH" when not given one, which
+    # is a real race under concurrency (confirmed live: this app doesn't
+    # serialize requests, and any other job/background test touching a
+    # different scenario's directory even a moment earlier could make this
+    # step read the wrong job's metadata, or hit a bare "Metadata file not
+    # found" with no connection to the file this job actually uploaded).
+    set_batch_date(state["output_dir"])
 
     business_date = state["metadata"].get("current_business_date", "unknown")
     return f"Batch date set to: {business_date}"
@@ -698,10 +707,20 @@ async def run_pipeline(job_id, user_id, username, log_file_path, progress_queue)
         root_cause = state.get("root_cause", "Unknown")
         results_json = json.dumps(state.get("results", []))
         cte_results_json = json.dumps(state.get("cte_results", []))
-        update_job_status(job_id, "completed", alerts_generated=0, root_cause=root_cause, result_json=results_json, cte_results_json=cte_results_json)
+
+        ai_recommendation = await asyncio.to_thread(
+            generate_recommendation, root_cause, state.get("results", [])
+        )
+
+        update_job_status(
+            job_id, "completed", alerts_generated=0, root_cause=root_cause,
+            result_json=results_json, cte_results_json=cte_results_json,
+            ai_recommendation=ai_recommendation,
+        )
         await _emit(progress_queue, "job_completed", {
             "job_id": job_id, "alerts_generated": False, "root_cause": root_cause,
             "results": state.get("results", []), "cte_results": state.get("cte_results", []),
+            "ai_recommendation": ai_recommendation,
         })
         audit("pipeline_completed", username=username, user_id=user_id, job_id=job_id, detail=f"No alerts - root cause: {root_cause}")
         state["run_logger"].close()

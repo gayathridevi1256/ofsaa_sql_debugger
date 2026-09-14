@@ -7,6 +7,13 @@ from app.config import DB_PATH
 logger = logging.getLogger(__name__)
 
 
+def _add_column_if_missing(db, table: str, column: str, col_type: str):
+    """Lightweight migration for existing DB files created before this column existed."""
+    existing = {row["name"] for row in db.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in existing:
+        db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
+
+
 def init_db():
     logger.info("Initialising database at: %s", DB_PATH)
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -43,9 +50,11 @@ def init_db():
                 alerts_generated INTEGER DEFAULT 0,
                 root_cause       TEXT,
                 result_json      TEXT,
-                cte_results_json TEXT
+                cte_results_json TEXT,
+                ai_recommendation TEXT
             )
         """)
+        _add_column_if_missing(db, "jobs", "ai_recommendation", "TEXT")
 
         db.execute("""
             CREATE TABLE IF NOT EXISTS job_steps (

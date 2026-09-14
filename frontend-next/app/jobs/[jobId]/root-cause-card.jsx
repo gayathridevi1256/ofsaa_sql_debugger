@@ -1,25 +1,68 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 
 const FAILURE_TYPE_COLORS = {
   where_combination: "var(--warning, #f59e0b)",
   where_condition: "var(--danger)",
   having: "var(--danger)",
   join: "var(--accent)",
+  threshold_kill: "var(--warning, #f59e0b)",
   upstream_dependency: "var(--text-muted)",
   no_source_data: "var(--text-muted)",
   unknown: "var(--text-muted)",
 };
 
-export function RootCauseCard({ rootCause, results }) {
+export function RootCauseCard({ rootCause, results, aiRecommendation, logFilePath }) {
+  const router = useRouter();
   if (!results?.length && !rootCause) return null;
+
+  const hasThresholdKill = results?.some((r) => (r.failure_type || "").toLowerCase() === "threshold_kill");
 
   return (
     <div className="card" style={{ marginTop: 24, borderLeft: "4px solid var(--danger)" }}>
       <h2 style={{ fontSize: "1rem", fontWeight: 700, marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>
         <span style={{ color: "var(--danger)" }}>⚠</span> Root Cause Analysis
       </h2>
+      {hasThresholdKill && logFilePath && (
+        <div
+          style={{
+            marginBottom: 16, padding: 12, borderRadius: "var(--radius-sm)",
+            border: "1px solid var(--warning, #f59e0b)", background: "rgba(245,158,11,0.08)",
+            display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap",
+          }}
+        >
+          <div style={{ fontSize: "0.8rem" }}>
+            <strong>This scenario's thresholds are killing all the rows.</strong> Tune them against real data from the same log — no need to re-upload.
+          </div>
+          <button
+            className="btn btn-primary btn-sm"
+            onClick={() => router.push(`/threshold-tuning?file_path=${encodeURIComponent(logFilePath)}`)}
+          >
+            🎯 Tune These Thresholds
+          </button>
+        </div>
+      )}
+      {aiRecommendation && (
+        <div
+          style={{
+            marginBottom: 16,
+            padding: 12,
+            borderRadius: "var(--radius-sm)",
+            border: "1px solid var(--accent)",
+            background: "var(--accent-dim, rgba(59,130,246,0.08))",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+            <span>💡</span>
+            <span style={{ fontSize: "0.72rem", fontWeight: 700, color: "var(--accent)", textTransform: "uppercase" }}>
+              AI Recommendation
+            </span>
+          </div>
+          <div style={{ fontSize: "0.85rem", whiteSpace: "pre-wrap", lineHeight: 1.5 }}>{aiRecommendation}</div>
+        </div>
+      )}
       {results?.length > 0 ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
           {results.map((r, i) => (
