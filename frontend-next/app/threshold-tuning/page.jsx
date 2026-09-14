@@ -1,12 +1,12 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { useAuth } from "@/hooks/use-auth";
 import { Navbar } from "@/components/layout/navbar";
 import { filesAPI, thresholdTuningAPI, getErrorMessage } from "@/lib/api-client";
 
-export default function ThresholdTuningPage() {
+function ThresholdTuningPageInner() {
   const { user, logout } = useAuth();
   const searchParams = useSearchParams();
   const incomingFilePath = searchParams.get("file_path");
@@ -484,5 +484,13 @@ function ThresholdTable({ result, recommendations }) {
         </table>
       </div>
     </div>
+  );
+}
+
+export default function ThresholdTuningPage() {
+  return (
+    <Suspense fallback={<div style={{ display: "flex", justifyContent: "center", padding: 40 }}><div className="spinner" /></div>}>
+      <ThresholdTuningPageInner />
+    </Suspense>
   );
 }
