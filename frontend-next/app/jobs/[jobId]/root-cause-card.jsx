@@ -18,7 +18,18 @@ export function RootCauseCard({ rootCause, results, aiRecommendation, logFilePat
   const router = useRouter();
   if (!results?.length && !rootCause) return null;
 
-  const hasThresholdKill = results?.some((r) => (r.failure_type || "").toLowerCase() === "threshold_kill");
+  // Two diagnosis paths can identify a tunable threshold: the specialized
+  // THRESHOLD_KILL detector (aggregated/inner-query conditions tied to
+  // KDD_TSHLD config) and the generic WHERE/HAVING elimination path, which
+  // also populates threshold_suggestions whenever the killer condition is a
+  // plain numeric range comparison — but keeps failure_type as "WHERE"/
+  // "HAVING" rather than "threshold_kill". Checking threshold_suggestions
+  // directly catches both, so the banner shows whenever there's a concrete,
+  // actionable suggestion to act on — not just for the narrower path.
+  const hasThresholdKill = results?.some((r) =>
+    (r.failure_type || "").toLowerCase() === "threshold_kill" ||
+    r.threshold_suggestions?.length > 0
+  );
 
   return (
     <div className="card" style={{ marginTop: 24, borderLeft: "4px solid var(--danger)" }}>
